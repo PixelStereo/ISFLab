@@ -37,9 +37,13 @@ private:
     bool matches(const ShaderEntry &entry) const;
     void exportFiltered(bool zip = false);
     void organize();
+    void moveErrors();
+    void clearSelection();
+    ISFType binType(const ShaderEntry &entry) const;
     void report(const ExportReport &result, const QString &destination, bool zip = false);
 
     QMap<QString, ShaderEntry> entries;
+    QMap<QString, QString> previewErrors;
     QString active, folder;
     QTreeWidget *tree;
     QMap<QString, QTreeWidgetItem *> rows, groups;
@@ -58,7 +62,6 @@ private:
     QPlainTextEdit *editor;
     QPushButton *compilePreviewButton;
     QPushButton *transitionAnimationButton;
-    SliderField *transitionSpeedField;
     QString previewedSource;
     QVBoxLayout *parameters;
     ShaderPreview *preview;

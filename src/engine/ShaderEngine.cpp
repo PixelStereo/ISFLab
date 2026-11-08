@@ -88,7 +88,6 @@ void ShaderEngine::load(const QByteArray &code, const QJsonObject &metadata, con
     fxInput = nextFx;
     filterEnabled = true;
     transitionAnimated = false;
-    transitionSpeed = 0.25;
     transitionOffset = 0.0;
     videoFrame = {};
     videoClock.invalidate();
@@ -128,8 +127,9 @@ void ShaderEngine::seek(double value) {
 void ShaderEngine::setValue(const QString &name, const QVariant &value) { values[name] = value; }
 QVariant ShaderEngine::value(const QString &name) const {
     if (transitionAnimated && name == "progress") {
-        const double phase = time * transitionSpeed + transitionOffset;
-        return 1.0 - std::abs(2.0 * (phase - std::floor(phase)) - 1.0);
+        const double elapsed = time + transitionOffset;
+        const double phase = elapsed - 6.0 * std::floor(elapsed / 6.0);
+        return qBound(0.0, qMin((phase - 1.0) / 2.0, (6.0 - phase) / 2.0), 1.0);
     }
     return values.value(name);
 }
@@ -137,17 +137,12 @@ QVariant ShaderEngine::value(const QString &name) const {
 void ShaderEngine::setTransitionAnimation(bool enabled) {
     if (transitionAnimated == enabled) return;
     if (enabled) {
-        transitionOffset = qBound(0.0, values.value("progress").toDouble(), 1.0) * 0.5
-            - time * transitionSpeed;
+        const double progress = qBound(0.0, values.value("progress").toDouble(), 1.0);
+        transitionOffset = (progress > 0.0 ? 1.0 + 2.0 * progress : 0.0) - time;
     } else {
         values.insert("progress", value("progress"));
     }
     transitionAnimated = enabled;
-}
-
-void ShaderEngine::setTransitionSpeed(double cyclesPerSecond) {
-    transitionOffset += time * (transitionSpeed - cyclesPerSecond);
-    transitionSpeed = cyclesPerSecond;
 }
 
 void ShaderEngine::setLiveInput(std::unique_ptr<LiveInput> input) {
@@ -311,13 +306,13 @@ QImage testCard(double seconds) {
     image.fill(ink);
     QPainter p(&image);
     p.setRenderHint(QPainter::Antialiasing);
-    const int cut = int(std::fmod(qMax(0.0, seconds), 6.0));
-    const auto accent = [&](int offset) { return accents[(cut + offset) % 6]; };
 
     p.setPen(white);
     p.setFont(QFont("Sans Serif", 13, QFont::DemiBold));
     p.drawText(QRect(20, 12, 600, 28), Qt::AlignLeft | Qt::AlignVCenter, "ISFLAB  /  PIXEL STEREO");
-    p.drawText(QRect(20, 12, 600, 28), Qt::AlignRight | Qt::AlignVCenter, "MOTION TEST  01");
+    p.drawText(QRect(230, 12, 275, 28), Qt::AlignCenter, "CHROMA  /  LUMA  /  MOTION");
+    p.drawText(QRect(510, 12, 110, 28), Qt::AlignRight | Qt::AlignVCenter,
+               QString::number(seconds, 'f', 2) + " s");
 
     p.fillRect(QRect(20, 52, 356, 214), panel);
     p.setPen(grid);
@@ -338,15 +333,24 @@ QImage testCard(double seconds) {
         p.drawEllipse(dot, 12 - i * 2, 12 - i * 2);
     }
 
+    const QColor rgb[] = {Qt::red, Qt::green, Qt::blue};
     for (int i = 0; i < 3; ++i) {
         const QRect tile(388 + i * 79, 52, 74, 94);
-        p.fillRect(tile, accent(i * 2));
+        p.fillRect(tile, rgb[i]);
         p.setPen(ink);
         p.drawText(tile.adjusted(8, 0, 0, -6), Qt::AlignLeft | Qt::AlignBottom,
-                   QString("0%1").arg(i + 1));
+                   QString(QChar("RGB"[i])));
     }
 
-    const QRect track(388, 156, 232, 110);
+    const QRect gradientArea(388, 156, 232, 110);
+    QLinearGradient cmyk(gradientArea.topLeft(), gradientArea.bottomRight());
+    cmyk.setColorAt(0.0, QColor::fromCmyk(255, 0, 0, 0));
+    cmyk.setColorAt(1.0 / 3.0, QColor::fromCmyk(0, 255, 0, 0));
+    cmyk.setColorAt(2.0 / 3.0, QColor::fromCmyk(0, 0, 255, 0));
+    cmyk.setColorAt(1.0, QColor::fromCmyk(0, 0, 0, 255));
+    p.fillRect(gradientArea, cmyk);
+
+    const QRect track(0, 304, image.width(), image.height() - 304);
     p.fillRect(track, panel);
     p.setClipRect(track);
     const int travel = int(std::fmod(seconds * 110, 32.0));
@@ -365,11 +369,6 @@ QImage testCard(double seconds) {
         const int x = 20 + i * 600 / 16;
         p.fillRect(x, 281, 20 + (i + 1) * 600 / 16 - x, 19, QColor(level, level, level));
     }
-    for (int i = 0; i < 6; ++i) p.fillRect(20 + i * 100, 304, 100, 6, accents[i]);
-    p.setPen(white);
-    p.drawText(QRect(20, 319, 600, 27), Qt::AlignLeft | Qt::AlignVCenter, "CHROMA  /  LUMA  /  MOTION");
-    p.drawText(QRect(20, 319, 600, 27), Qt::AlignRight | Qt::AlignVCenter,
-               QString::number(seconds, 'f', 2) + " s");
     p.end();
     return image;
 }

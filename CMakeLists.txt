@@ -27,7 +27,7 @@ qt_add_executable(ISFLab WIN32 MACOSX_BUNDLE
     src/app/SliderField.h src/app/SliderField.cpp
     src/app/ColorPicker.h src/app/ColorPicker.cpp
 )
-qt_add_resources(ISFLab branding PREFIX "/" FILES assets/ISFLab.png)
+qt_add_resources(ISFLab branding PREFIX "/" FILES assets/ISFLab-rounded.png)
 set(live_source src/engine/input/NoLiveInput.cpp)
 set(live_libraries)
 if(APPLE)
@@ -96,7 +96,8 @@ endif()
 
 set(demo_shaders examples/ColorWave.fs examples/Invert.fs examples/Crossfade.fs)
 if(APPLE)
-    target_sources(ISFLab PRIVATE ${demo_shaders} third_party/syphon/License.txt assets/ISFLab.icns)
+    target_sources(ISFLab PRIVATE src/app/MacApplicationIcon.mm ${demo_shaders} third_party/syphon/License.txt assets/ISFLab.icns)
+    target_link_libraries(ISFLab PRIVATE "-framework AppKit")
     set_source_files_properties(assets/ISFLab.icns PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
     set_source_files_properties(third_party/syphon/License.txt PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/licenses")
     set_source_files_properties(${demo_shaders} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/examples")

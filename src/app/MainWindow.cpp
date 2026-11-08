@@ -220,7 +220,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     auto *openFiles = file->addAction("Import shaders…", QKeySequence::Open, this, [this] {
         importPaths(QFileDialog::getOpenFileNames(this, "Import ISF shaders", folder, filter));
     });
-    auto *loadExamples = file->addAction("Load examples", this, [this] {
+    file->addAction("Load examples", this, [this] {
 #ifdef Q_OS_MACOS
         const auto path = QDir(QCoreApplication::applicationDirPath()).filePath("../Resources/examples");
 #else
@@ -230,7 +230,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         if (QFileInfo(path).isDir()) importPaths({path});
         else QMessageBox::information(this, "Load examples", "Install ISFLab to load the bundled examples.");
     });
-    auto *loadCommunity = file->addAction("Load community shaders…", this, [this] {
+    file->addAction("Load community shaders…", this, [this] {
         QDir root(QCoreApplication::applicationDirPath());
         for (int depth = 0; depth < 6; ++depth) {
             if (root.exists("examples/community/manifest.json")) {
@@ -272,13 +272,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     auto *organizeAction = file->addAction("Organize a folder…", this, &MainWindow::organize);
     file->addSeparator();
     file->addAction("Quit", QKeySequence::Quit, this, &QWidget::close);
-    auto *about = menuBar()->addMenu("&Help")->addAction("About ISFLab", this, [this] {
+    const QIcon brandLogo(":/assets/ISFLab-rounded.png");
+    auto *about = menuBar()->addMenu("&Help")->addAction("About ISFLab", this, [this, brandLogo] {
         QDialog dialog(this);
         dialog.setWindowTitle("About ISFLab");
         auto *layout = new QVBoxLayout(&dialog);
         layout->setContentsMargins(30, 24, 30, 20);
         auto *logo = plainLabel();
-        logo->setPixmap(QApplication::windowIcon().pixmap(QSize(112, 112), devicePixelRatioF()));
+        logo->setPixmap(brandLogo.pixmap(QSize(112, 112), devicePixelRatioF()));
         layout->addWidget(logo, 0, Qt::AlignHCenter);
         auto *title = plainLabel("ISFLab");
         auto font = title->font();
@@ -303,7 +304,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     toolbar->setMovable(false);
     toolbar->setIconSize(QSize(17, 17));
     auto *brandIcon = plainLabel();
-    brandIcon->setPixmap(QApplication::windowIcon().pixmap(QSize(24, 24), devicePixelRatioF()));
+    brandIcon->setPixmap(brandLogo.pixmap(QSize(24, 24), devicePixelRatioF()));
     toolbar->addWidget(brandIcon);
     auto *brand = plainLabel("ISFLab");
     brand->setObjectName("brand");
@@ -323,14 +324,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     };
     command(openFiles, "Import files", AppStyle::Icon::File);
     command(openFolder, "Import folder", AppStyle::Icon::Folder);
-    command(loadExamples, "Load examples", AppStyle::Icon::Stack);
-    command(loadCommunity, "Community", AppStyle::Icon::Folder);
     toolbar->addSeparator();
     auto *exportMenu = new QMenu(toolbar);
     exportMenu->addAction(exportAction);
     exportMenu->addAction(zipAction);
     exportMenu->addSeparator();
     exportMenu->addAction(organizeAction);
+    exportMenu->addAction("Move ERR to Folder…", this, &MainWindow::moveErrors);
     auto *exportButton = new QToolButton;
     exportButton->setObjectName("command");
     exportButton->setText("Export");
@@ -369,13 +369,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         }
         refresh();
     });
-    for (const auto kind : {ISFType::Generator, ISFType::FX, ISFType::Transition}) {
-        auto *tab = new QPushButton(kind == ISFType::FX ? "Filter" : ISFScanner::typeToString(kind));
+    for (const auto kind : {ISFType::Generator, ISFType::FX, ISFType::Transition, ISFType::Unknown}) {
+        auto *tab = new QPushButton(kind == ISFType::Unknown ? "ERR" : kind == ISFType::FX ? "Filter" : ISFScanner::typeToString(kind));
         tab->setProperty("filterTab", true);
-        tab->setObjectName(kind == ISFType::Generator ? "generatorType" : kind == ISFType::FX ? "effectType" : "transitionType");
+        tab->setObjectName(kind == ISFType::Generator ? "generatorType" : kind == ISFType::FX ? "effectType" : kind == ISFType::Transition ? "transitionType" : "errorType");
         tab->setCheckable(true);
         tab->setChecked(true);
-        tab->setToolTip("Toggle this shader type. Several types can be active.");
+        tab->setToolTip(kind == ISFType::Unknown ? "Invalid headers and errors detected in preview." :
+                        "Toggle this shader type. Several types can be active.");
         typeTabs.insert(kind, tab);
         typeLayout->addWidget(tab, 1);
         connect(tab, &QPushButton::toggled, this, &MainWindow::refresh);
@@ -501,22 +502,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     transitionAnimationButton = new QPushButton("Animate progress");
     transitionAnimationButton->setCheckable(true);
     transitionAnimationButton->setChecked(true);
-    transitionAnimationButton->setToolTip("Loop transition progress from 0 to 1 and back.");
-    transitionSpeedField = new SliderField;
-    transitionSpeedField->setRange(0.05, 4.0);
-    transitionSpeedField->setDecimals(2);
-    transitionSpeedField->setSingleStep(0.05);
-    transitionSpeedField->setSuffix(" cycles/s");
-    transitionSpeedField->setAccessibleName("Transition speed");
-    transitionSpeedField->setValue(0.25);
+    transitionAnimationButton->setToolTip("Loop from 0 to 1 and back in two seconds each way, with a one-second hold at each end.");
     connect(transitionAnimationButton, &QPushButton::toggled, this, [this](bool running) {
         if (!transitionAnimationButton->isEnabled()) return;
         preview->setTransitionAnimation(running);
-        transitionSpeedField->setEnabled(running);
     });
-    connect(transitionSpeedField, &SliderField::valueEdited, preview, &ShaderPreview::setTransitionSpeed);
     animationBar->addWidget(transitionAnimationButton);
-    animationBar->addWidget(transitionSpeedField);
     animationBar->addStretch();
     viewerLayout->addLayout(animationBar);
     viewerLayout->addWidget(preview, 1);
@@ -582,7 +573,16 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     previewStatus->setWordWrap(true);
     previewStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
     viewerLayout->addWidget(previewStatus);
-    connect(preview, &ShaderPreview::status, previewStatus, &QLabel::setText);
+    connect(preview, &ShaderPreview::status, this, [this](const QString &status) {
+        previewStatus->setText(status);
+        if (active.isEmpty() || editor->document()->isModified() || !entries.value(active).header) return;
+        if (status == "Preview compiled") {
+            if (previewErrors.remove(active)) refresh();
+        } else if (previewErrors.value(active) != status) {
+            previewErrors.insert(active, status);
+            refresh();
+        }
+    });
     connect(preview, &ShaderPreview::timeChanged, this, [=](double seconds) {
         if (!timeline->isEditing()) timeline->setValue(seconds);
     });
@@ -951,11 +951,12 @@ void MainWindow::addFiles(const QStringList &files, const QString &group) {
     statusBar()->showMessage(QString("Imported %1 shader(s); %2 could not be read.").arg(added).arg(failed), 5000);
 }
 
+ISFType MainWindow::binType(const ShaderEntry &entry) const {
+    return previewErrors.contains(entry.path) ? ISFType::Unknown : entry.type();
+}
+
 bool MainWindow::matches(const ShaderEntry &entry) const {
-    if (entry.type() != ISFType::Unknown && !typeTabs.value(entry.type())->isChecked()) return false;
-    if (entry.type() == ISFType::Unknown)
-        for (auto *tab : typeTabs)
-            if (!tab->isChecked()) return false;
+    if (!typeTabs.value(binType(entry))->isChecked()) return false;
     const auto categories = entry.header ? ISFScanner::categories(*entry.header) : QStringList{};
     if (!uncheckedCategories.isEmpty()) {
         bool checked = false;
@@ -1061,7 +1062,7 @@ void MainWindow::refresh() {
             else origin = QDir::toNativeSeparators(file.absolutePath());
         }
         item->setData(0, AppStyle::OriginRole, origin);
-        const auto kind = entry.type();
+        const auto kind = binType(entry);
         item->setData(0, AppStyle::KindRole, int(kind));
         item->setData(1, AppStyle::KindRole, int(kind));
         switch (kind) {
@@ -1070,7 +1071,7 @@ void MainWindow::refresh() {
         case ISFType::Transition: item->setText(1, "TRANS"); break;
         default: item->setText(1, "ERR"); break;
         }
-        item->setToolTip(1, ISFScanner::typeToString(kind));
+        item->setToolTip(1, previewErrors.value(entry.path, ISFScanner::typeToString(kind)));
         item->setToolTip(0, entry.path + (entry.header ? "\n" + ISFScanner::categories(*entry.header).join(", ") : QString()));
         const bool shown = matches(entry);
         item->setHidden(!shown);
@@ -1149,6 +1150,7 @@ bool MainWindow::save() {
     }
     entry.source = source;
     entry.header = header;
+    previewErrors.remove(active);
     editor->document()->setModified(false);
     applyPreview();
     refresh();
@@ -1231,7 +1233,6 @@ void MainWindow::controls(const QJsonObject &header) {
     const auto shaderType = ISFScanner::classify(header);
     const bool isTransition = shaderType == ISFType::Transition;
     transitionAnimationButton->setEnabled(isTransition);
-    transitionSpeedField->setEnabled(isTransition && transitionAnimationButton->isChecked());
     QVBoxLayout *sources = nullptr;
     if (std::any_of(inputs.begin(), inputs.end(), [](const QJsonValue &entry) {
             return entry.toObject().value("TYPE").toString() == "image";
@@ -1316,7 +1317,6 @@ void MainWindow::controls(const QJsonObject &header) {
             parameters->addWidget(spin);
             preview->setValue(name, spin->value());
             if (transitionProgress) {
-                preview->setTransitionSpeed(transitionSpeedField->value());
                 preview->setTransitionAnimation(transitionAnimationButton->isChecked());
                 connect(preview, &ShaderPreview::timeChanged, spin, [=] {
                     if (transitionAnimationButton->isChecked() && !spin->isEditing())
@@ -1453,6 +1453,17 @@ void MainWindow::controls(const QJsonObject &header) {
             sourceStatus->setWordWrap(true);
             auto *button = new QPushButton("Choose image…");
             auto *chooseShader = new QPushButton("Choose ISF generator…");
+            auto *defaultButton = fxSource ? nullptr : new QPushButton;
+            const auto showDefault = [defaultButton, defaultName](bool active) {
+                if (!defaultButton) return;
+                defaultButton->setChecked(active);
+                defaultButton->setText(active ? defaultName + " · On" : "Use " + defaultName);
+            };
+            if (defaultButton) {
+                defaultButton->setObjectName("testCard");
+                defaultButton->setCheckable(true);
+                showDefault(true);
+            }
             connect(button, &QPushButton::clicked, this, [=] {
                 const auto path = QFileDialog::getOpenFileName(this, "Choose image", folder);
                 if (path.isEmpty()) return;
@@ -1462,6 +1473,7 @@ void MainWindow::controls(const QJsonObject &header) {
                     return;
                 }
                 preview->setImage(name, image);
+                showDefault(false);
                 sourceStatus->setText("Image: " + QFileInfo(path).fileName());
             });
             connect(chooseShader, &QPushButton::clicked, this, [=] {
@@ -1473,10 +1485,12 @@ void MainWindow::controls(const QJsonObject &header) {
                     return;
                 }
                 preview->setShaderInput(name, shader->source, *shader->header, path);
+                showDefault(false);
                 sourceStatus->setText("ISF: " + QFileInfo(path).fileName());
             });
             connect(preview, &ShaderPreview::shaderInputError, sourceStatus, [=](const QString &slot, const QString &error) {
                 if (slot == name) {
+                    showDefault(true);
                     sourceStatus->setText(defaultName + " · ISF source unavailable");
                     sourceStatus->setToolTip(error);
                 }
@@ -1562,12 +1576,12 @@ void MainWindow::controls(const QJsonObject &header) {
                 });
                 layout->addWidget(live);
             } else {
-                auto *reset = new QPushButton("Use " + defaultName);
-                connect(reset, &QPushButton::clicked, this, [=] {
+                connect(defaultButton, &QPushButton::clicked, this, [=] {
+                    showDefault(true);
                     preview->setImage(name, {});
                     sourceStatus->setText(defaultName);
                 });
-                layout->addWidget(reset);
+                layout->addWidget(defaultButton);
             }
             layout->addWidget(button);
             layout->addWidget(chooseShader);
@@ -1639,6 +1653,70 @@ void MainWindow::exportFiltered(bool zip) {
     }
 }
 
+void MainWindow::clearSelection() {
+    active.clear();
+    previewedSource.clear();
+    compilePreviewButton->setEnabled(false);
+    editor->clear();
+    editor->document()->setModified(false);
+    editor->setReadOnly(true);
+    preview->load({}, {}, {});
+    controls({});
+    previewStatus->setText("Select a shader to preview.");
+}
+
+void MainWindow::moveErrors() {
+    if (!resolveChanges()) return;
+    QStringList selected;
+    for (const auto &entry : std::as_const(entries))
+        if (binType(entry) == ISFType::Unknown && matches(entry)) selected << entry.path;
+    if (selected.isEmpty()) {
+        QMessageBox::information(this, "Move ERR to Folder", "No shaders in error match the current filters.");
+        return;
+    }
+    const auto destination = QFileDialog::getExistingDirectory(
+        this, QString("Move %1 shader(s) in error to…").arg(selected.size()), folder);
+    if (destination.isEmpty()) return;
+    const auto destinationPath = QFileInfo(destination).canonicalFilePath();
+    if (destinationPath.isEmpty() || !QFileInfo(destinationPath).isDir()) {
+        QMessageBox::warning(this, "Move ERR to Folder", "The destination folder is no longer available.");
+        return;
+    }
+    const QDir target(destinationPath);
+    QStringList failures;
+    int moved = 0;
+    const QSignalBlocker blocker(tree);
+    for (const auto &path : selected) {
+        const QFileInfo source(path);
+        if (source.absolutePath() == target.absolutePath()) continue;
+        const auto current = readShader(path);
+        if (!current || current->source != entries.value(path).source) {
+            failures << path + ": The file changed or could not be read.";
+            continue;
+        }
+        QString output = target.filePath(source.fileName());
+        for (int suffix = 2; QFileInfo::exists(output) || QFileInfo(output).isSymLink(); ++suffix)
+            output = target.filePath(QString("%1_%2.%3").arg(source.completeBaseName()).arg(suffix).arg(source.suffix()));
+        QFile file(path);
+        if (!file.rename(output)) {
+            failures << path + ": " + file.errorString();
+            continue;
+        }
+        ++moved;
+        if (active == path) clearSelection();
+        entries.remove(path);
+        delete rows.take(path);
+        entryGroups.remove(path);
+        previewErrors.remove(path);
+    }
+    refresh();
+    QMessageBox result(failures.isEmpty() ? QMessageBox::Information : QMessageBox::Warning,
+                       "Move ERR to Folder", QString("%1 shader(s) moved. %2 error(s).").arg(moved).arg(failures.size()),
+                       QMessageBox::Ok, this);
+    result.setDetailedText(failures.join('\n'));
+    result.exec();
+}
+
 void MainWindow::organize() {
     if (!resolveChanges()) return;
     const auto source = QFileDialog::getExistingDirectory(this, "Choose a folder to organize", folder);
@@ -1682,6 +1760,7 @@ void MainWindow::organize() {
             if (entries.remove(path)) {
                 delete rows.take(path);
                 entryGroups.remove(path);
+                previewErrors.remove(path);
                 importedCopies << it.value();
             }
             if (active == path) {
@@ -1691,16 +1770,7 @@ void MainWindow::organize() {
         }
         if (!importedCopies.isEmpty()) addFiles(importedCopies, source);
         if (!selectedCopy.isEmpty() && entries.contains(selectedCopy)) select(selectedCopy);
-        else if (active.isEmpty()) {
-            previewedSource.clear();
-            compilePreviewButton->setEnabled(false);
-            editor->clear();
-            editor->document()->setModified(false);
-            editor->setReadOnly(true);
-            preview->load({}, {}, {});
-            controls({});
-            previewStatus->setText("Select a shader to preview.");
-        }
+        else if (active.isEmpty()) clearSelection();
         refresh();
     }
     report(result, source);

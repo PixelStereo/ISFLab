@@ -38,7 +38,6 @@ public:
     void setValue(const QString &name, const QVariant &value);
     QVariant value(const QString &name) const;
     void setTransitionAnimation(bool enabled);
-    void setTransitionSpeed(double cyclesPerSecond);
     void useTestCard();
     void setLiveInput(std::unique_ptr<LiveInput> input);
     void setShaderInput(const QString &name, const QByteArray &source, const QJsonObject &header, const QString &path);
@@ -82,7 +81,6 @@ private:
     bool fxInput = false;
     bool filterEnabled = true;
     bool transitionAnimated = false;
-    double transitionSpeed = 0.25;
     double transitionOffset = 0.0;
     QString lastInputStatus;
     double time = 0;

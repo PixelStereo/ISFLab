@@ -45,12 +45,13 @@ int main(int argc, char **argv) {
         preview.setShaderInput("startImage", red, *ISFScanner::header(red), {});
         preview.setShaderInput("endImage", blue, *ISFScanner::header(blue), {});
         preview.setTransitionAnimation(true);
-        for (int second = 0; second <= 4; ++second) {
+        const int blueBySecond[] = {0, 0, 128, 255, 255, 128, 0};
+        for (int second = 0; second <= 6; ++second) {
             preview.seek(second);
             const auto frame = preview.grabFramebuffer();
             if (frame.isNull()) qFatal("Missing transition frame");
             const auto pixel = frame.pixelColor(frame.width() / 2, frame.height() / 2);
-            const int expectedBlue = qRound((2 - qAbs(2 - second)) * 127.5);
+            const int expectedBlue = blueBySecond[second];
             if (qAbs(pixel.blue() - expectedBlue) > 2 || qAbs(pixel.red() - (255 - expectedBlue)) > 2)
                 qFatal("Incorrect transition frame at second %d", second);
         }

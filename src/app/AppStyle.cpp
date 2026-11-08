@@ -23,11 +23,6 @@ QIcon icon(Icon kind, const QColor &color) {
     p.setPen(QPen(color, 1.45, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     const auto line = [&](std::initializer_list<QPointF> points) { p.drawPolyline(QPolygonF(points)); };
     switch (kind) {
-    case Icon::Stack:
-        line({{2,7},{10,3},{18,7},{10,11},{2,7}});
-        line({{2,10.5},{10,14.5},{18,10.5}});
-        line({{2,14},{10,18},{18,14}});
-        break;
     case Icon::Folder:
         line({{2.5,15.5},{2.5,5},{7.5,5},{9.5,7},{17.5,7},{17.5,15.5},{2.5,15.5}});
         break;
@@ -62,7 +57,7 @@ void apply(QApplication &app) {
     palette.setColor(QPalette::Text, QColor("#e1e1e4"));
     palette.setColor(QPalette::Button, QColor("#343439"));
     palette.setColor(QPalette::ButtonText, QColor("#e1e1e4"));
-    palette.setColor(QPalette::Highlight, QColor("#c1c6d0"));
+    palette.setColor(QPalette::Highlight, QColor("#8394b3"));
     palette.setColor(QPalette::HighlightedText, QColor("#1a1a1d"));
     palette.setColor(QPalette::Mid, QColor("#4b4b51"));
     palette.setColor(QPalette::PlaceholderText, QColor("#929298"));
@@ -90,17 +85,19 @@ QPushButton:pressed, QToolButton:pressed { background:#46464e; border-color:#818
 QPushButton:focus, QToolButton:focus { border-color:#a0a4af; }
 QPushButton:disabled, QToolButton:disabled { color:#78787d; border-color:#3b3b41; }
 QPushButton:checked, QToolButton:checked { background:#48484f; border-color:#84848d; }
-QPushButton#primary { background:#c1c6d0; color:#1a1a1d; border-color:#d0d4dc; font-weight:600; }
-QPushButton#testCard:checked { background:#c1c6d0; color:#1a1a1d; border-color:#d0d4dc; font-weight:600; }
-QPushButton#primary:hover { background:#d3d6df; }
+QPushButton#primary { background:#8394b3; color:#1a1a1d; border-color:#9aabc6; font-weight:600; }
+QPushButton#testCard:checked { background:#8394b3; color:#1a1a1d; border-color:#9aabc6; font-weight:600; }
+QPushButton#primary:hover { background:#96a7c3; }
 QToolButton#command { padding:4px 7px; background:transparent; border-color:transparent; }
 QToolButton#command:hover { background:#3a3a40; border-color:#4f4f57; }
 QPushButton[filterTab="true"] { padding:4px 5px; font-weight:600; background:#29292e; border-bottom:2px solid #494951; }
 QPushButton[filterTab="true"]:checked { background:#45454c; border-color:#747481; }
-QPushButton#allTypes:checked { background:#c1c6d0; color:#1a1a1d; border-color:#d0d4dc; }
+QPushButton#allTypes:checked { background:#8394b3; color:#1a1a1d; border-color:#9aabc6; }
 QPushButton#generatorType { color:#84cfab; }
 QPushButton#effectType { color:#94bdf4; }
 QPushButton#transitionType { color:#caadeb; }
+QPushButton#errorType { color:#e5a19b; }
+QPushButton#errorType:checked { background:#393940; border-bottom-color:#e5a19b; }
 QPushButton#generatorType:checked { background:#393940; border-bottom-color:#84cfab; }
 QPushButton#effectType:checked { background:#393940; border-bottom-color:#94bdf4; }
 QPushButton#transitionType:checked { background:#393940; border-bottom-color:#caadeb; }
@@ -112,14 +109,14 @@ QLineEdit#sliderNumber { padding:0 6px; }
 QLineEdit:focus, QAbstractSpinBox:focus, QPlainTextEdit:focus, QComboBox:focus { border-color:#9a9eaa; }
 QCheckBox { spacing:7px; }
 QCheckBox::indicator { width:13px; height:13px; border:1px solid #666670; border-radius:3px; background:#242428; }
-QCheckBox::indicator:checked { background:#c1c6d0; border:3px solid #46464c; width:9px; height:9px; }
+QCheckBox::indicator:checked { background:#8394b3; border:3px solid #46464c; width:9px; height:9px; }
 QTreeWidget#shaderTree { background:#1e1e21; border:1px solid #3b3b41; border-radius:6px; padding:4px 3px; outline:0; }
 QTreeWidget#shaderTree::item { border:0; }
 QTabWidget::pane { border:1px solid #55555e; border-radius:6px; }
 QTabBar::tab { background:#25252b; color:#c3c3cd; padding:5px 11px; margin-right:3px;
                font-weight:600; border:1px solid #62626e; border-bottom:3px solid #44444e;
                border-top-left-radius:4px; border-top-right-radius:4px; }
-QTabBar::tab:selected { background:#4c4c59; color:#f4f4f7; border-color:#9494a3; border-bottom-color:#c1c6d0; }
+QTabBar::tab:selected { background:#4c4c59; color:#f4f4f7; border-color:#9494a3; border-bottom-color:#8394b3; }
 QTabBar::tab:hover:!selected { background:#383841; color:#ffffff; }
 QDockWidget { font-weight:600; color:#d9d9de; }
 QDockWidget::title { background:#2c2c32; padding:6px 10px; }
@@ -152,7 +149,7 @@ public:
         font.setWeight(group || active ? QFont::DemiBold : QFont::Normal);
         p->setFont(font);
         if (i.column() == 0) {
-            const auto symbol = icon(group ? Icon::Folder : Icon::File, group ? QColor("#c1c6d0") : QColor("#a5a5ae"));
+            const auto symbol = icon(group ? Icon::Folder : Icon::File, group ? QColor("#8394b3") : QColor("#a5a5ae"));
             symbol.paint(p, QRect(rect.left() + 4, rect.center().y() - 8, 16, 16));
             p->setPen(group ? QColor("#c9c9d1") : QColor("#eeeeef"));
             const auto label = rect.adjusted(25, 0, -3, 0);

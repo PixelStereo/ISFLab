@@ -102,11 +102,6 @@ void ShaderPreview::setTransitionAnimation(bool enabled) {
     update();
 }
 
-void ShaderPreview::setTransitionSpeed(double cyclesPerSecond) {
-    engine.setTransitionSpeed(cyclesPerSecond);
-    update();
-}
-
 void ShaderPreview::setValue(const QString &name, const QVariant &value) {
     engine.setValue(name, value);
     update();

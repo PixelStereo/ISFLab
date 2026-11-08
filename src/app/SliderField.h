@@ -43,5 +43,8 @@ private:
     double lower = 0, upper = 1, typedMin = 0, typedMax = 1;
     double current = 0, lastX = 0, dragValue = 0, step = 1;
     int decimals = 2;
+    double numberDragStart = 0;
+    bool numberPressed = false;
+    bool numberDragging = false;
     bool dragging = false;
 };

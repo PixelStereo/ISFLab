@@ -4,6 +4,10 @@
 #include <QLocale>
 #include <QIcon>
 
+#ifdef Q_OS_MACOS
+void applyMacApplicationIcon();
+#endif
+
 int main(int argc, char *argv[]) {
     QLocale::setDefault(QLocale(QLocale::English));
     QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
@@ -12,7 +16,9 @@ int main(int argc, char *argv[]) {
     app.setApplicationVersion(ISFLAB_VERSION);
     app.setOrganizationName("Pixel Stereo");
     app.setDesktopFileName("studio.pixelstereo.isflab");
-    app.setWindowIcon(QIcon(":/assets/ISFLab.png"));
+#ifndef Q_OS_MACOS
+    app.setWindowIcon(QIcon(":/assets/ISFLab-rounded.png"));
+#endif
 
     if (!app.primaryScreen()) {
         qCritical("ISFLab requires a graphical desktop session.");
@@ -21,5 +27,8 @@ int main(int argc, char *argv[]) {
     AppStyle::apply(app);
     MainWindow window;
     window.show();
+#ifdef Q_OS_MACOS
+    applyMacApplicationIcon();
+#endif
     return app.exec();
 }

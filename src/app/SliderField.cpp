@@ -1,4 +1,5 @@
 #include "SliderField.h"
+#include <QApplication>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QMouseEvent>
@@ -15,7 +16,7 @@ SliderField::SliderField(QWidget *parent) : QWidget(parent), number(new QLineEdi
     number->setAccessibleName("Numeric value");
     number->installEventFilter(this);
     installEventFilter(this);
-    setToolTip("Click or drag the bar. Hold Shift for fine adjustment, or type a value.");
+    setToolTip("Drag the bar or the number. Hold Shift for fine adjustment, or type a value.");
     connect(number, &QLineEdit::editingFinished, this, [this] {
         auto text = number->text().trimmed();
         const auto suffix = unit.trimmed();
@@ -68,7 +69,7 @@ void SliderField::syncText() {
     const auto text = format(current);
     if (text != number->text()) number->setText(text);
 }
-bool SliderField::isEditing() const { return dragging || number->hasFocus(); }
+bool SliderField::isEditing() const { return dragging || numberDragging || number->hasFocus(); }
 QSize SliderField::sizeHint() const { return QSize(220, 24); }
 
 void SliderField::arrange() {
@@ -108,13 +109,6 @@ void SliderField::paintEvent(QPaintEvent *) {
     const auto origin = position(0), current = position(value());
     p.setBrush(palette().color(isEnabled() ? QPalette::Active : QPalette::Disabled, QPalette::Highlight));
     p.drawRoundedRect(QRectF(qMin(origin, current), bar.top(), std::abs(current - origin), bar.height()), 4, 4);
-    auto tick = palette().color(QPalette::Text);
-    tick.setAlpha(80);
-    p.setPen(tick);
-    for (int i = 1; i < 10; ++i) {
-        const auto x = bar.left() + bar.width() * i / 10.;
-        p.drawLine(QPointF(x, bar.top() + 4), QPointF(x, bar.bottom() - 4));
-    }
     p.setBrush(Qt::NoBrush);
     p.setPen(palette().color(hasFocus() ? QPalette::Highlight : QPalette::Mid));
     p.drawRoundedRect(bar, 4, 4);
@@ -152,6 +146,36 @@ bool SliderField::eventFilter(QObject *object, QEvent *event) {
     if ((object == number || object == this) && event->type() == QEvent::Wheel) {
         event->ignore();
         return true;
+    }
+    if (object == number) {
+        if (event->type() == QEvent::MouseButtonPress) {
+            const auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouse->button() == Qt::LeftButton) {
+                numberPressed = true;
+                numberDragStart = lastX = mouse->globalPosition().x();
+                dragValue = current;
+            }
+        } else if (event->type() == QEvent::MouseMove && numberPressed) {
+            const auto *mouse = static_cast<QMouseEvent *>(event);
+            const double x = mouse->globalPosition().x();
+            if (numberDragging || std::abs(x - numberDragStart) >= QApplication::startDragDistance()) {
+                numberDragging = true;
+                number->setCursor(Qt::SizeHorCursor);
+                const double sensitivity = (upper - lower) / track().width();
+                const double fine = mouse->modifiers().testFlag(Qt::ShiftModifier) ? 0.1 : 1.0;
+                dragValue = qBound(typedMin, dragValue + (x - lastX) * sensitivity * fine, typedMax);
+                lastX = x;
+                edit(dragValue);
+                return true;
+            }
+        } else if (event->type() == QEvent::MouseButtonRelease || event->type() == QEvent::UngrabMouse) {
+            numberPressed = false;
+            if (numberDragging) {
+                numberDragging = false;
+                number->unsetCursor();
+                number->deselect();
+            }
+        }
     }
     return QWidget::eventFilter(object, event);
 }

@@ -16,7 +16,6 @@ public:
     void setValue(const QString &name, const QVariant &value);
     QVariant value(const QString &name) const { return engine.value(name); }
     void setTransitionAnimation(bool enabled);
-    void setTransitionSpeed(double cyclesPerSecond);
     void useTestCard();
     void setLiveInput(std::unique_ptr<LiveInput> input);
     void setShaderInput(const QString &name, const QByteArray &source, const QJsonObject &header, const QString &path);
