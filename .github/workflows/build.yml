@@ -72,7 +72,7 @@ jobs:
         run: xvfb-run -a ctest --test-dir build-ci -C Release --output-on-failure
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
-      - run: cmake --install build-ci --config Release --prefix package
+      - run: cmake --install build-ci --config Release --prefix "${{ github.workspace }}/package"
       - name: Sign and archive macOS bundle
         if: runner.os == 'macOS'
         run: |
