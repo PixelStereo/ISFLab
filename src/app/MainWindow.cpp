@@ -1265,7 +1265,7 @@ void MainWindow::controls(const QJsonObject &header) {
         auto *heading = plainLabel(QString("Linked images (%1)").arg(imported.size()));
         heading->setObjectName("sectionTitle");
         parameters->addWidget(heading);
-        for (auto it = imported.cbegin(); it != imported.cend(); ++it) {
+        for (auto it = imported.constBegin(); it != imported.constEnd(); ++it) {
             const auto relative = it.value().toObject().value("PATH").toString();
             const auto path = QFileInfo(active).dir().filePath(relative);
             auto *row = new QWidget;
