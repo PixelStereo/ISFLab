@@ -1,0 +1,15 @@
+.DS_Store
+/build/
+/build-*/
+/dist/
+/examples/community/
+__pycache__/
+*.pyc
+/package/
+/CMakeFiles/
+/CMakeCache.txt
+/CTestTestfile.cmake
+/Testing/
+/cmake_install.cmake
+/ISFLab-*.zip
+/ISFLab-*.tar.gz

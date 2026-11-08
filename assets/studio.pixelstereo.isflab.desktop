@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=ISFLab
+Comment=Browse, preview and edit Interactive Shader Format shaders
+Exec=ISFLab
+Icon=studio.pixelstereo.isflab
+Terminal=false
+Categories=Graphics;
