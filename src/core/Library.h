@@ -7,7 +7,14 @@ struct ShaderEntry {
     QString path;
     QByteArray source;
     std::optional<QJsonObject> header;
-    ISFType type() const { return header ? ISFScanner::classify(*header) : ISFType::Unknown; }
+    bool madMapper = ISFScanner::isMadMapperMaterial(source);
+    ISFType type() const {
+        if (madMapper) return ISFType::MadMapper;
+        if (header) return ISFScanner::classify(*header);
+        if (path.endsWith(".fs", Qt::CaseInsensitive) && ISFScanner::headerStart(source) < 0)
+            return ISFType::NonISF;
+        return ISFType::Unknown;
+    }
 };
 
 struct ExportReport {
@@ -19,3 +26,4 @@ struct ExportReport {
 QStringList shaderFiles(const QString &folder, bool skipOrganized = false);
 ExportReport exportShaders(const QList<ShaderEntry> &entries, const QString &destination);
 QString copyShaderToFolder(const ShaderEntry &entry, const QString &destination, QString &created);
+std::optional<QByteArray> shaderFingerprint(const ShaderEntry &entry);

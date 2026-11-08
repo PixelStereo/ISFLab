@@ -22,6 +22,7 @@ public:
     void setImage(const QString &name, const QImage &image);
 signals:
     void status(const QString &message);
+    void glslDiagnostic(const QString &stage, const QString &file, const QString &log, int line);
     void inputStatus(const QString &message);
     void testCardActiveChanged(bool active);
     void shaderInputError(const QString &name, const QString &message);

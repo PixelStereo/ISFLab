@@ -1,4 +1,4 @@
-"""Refresh the README links from the most recently published complete release."""
+"""Refresh the README and build version from the latest complete release."""
 
 import json
 from pathlib import Path
@@ -19,8 +19,8 @@ def download_block(releases, repository):
     base = f"https://github.com/{repository}/releases"
     for release in sorted(releases, key=lambda item: item.get("published_at") or "", reverse=True):
         tag = release["tag_name"]
-        if (release.get("draft") or not release.get("published_at")
-                or not re.fullmatch(r"v[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:[-+][A-Za-z0-9.-]+)?", tag)):
+        version = re.fullmatch(r"v([0-9]+\.[0-9]+(?:\.[0-9]+)?)(?:[-+][A-Za-z0-9.-]+)?", tag)
+        if release.get("draft") or not release.get("published_at") or not version:
             continue
         assets = {item["name"]: item["browser_download_url"] for item in release.get("assets", [])
                   if item.get("state") == "uploaded" and item.get("size", 0) > 0}
@@ -29,8 +29,11 @@ def download_block(releases, repository):
             continue
         preview = " (preview)" if release.get("prerelease") else ""
         links = " · ".join(f"[{platform}]({url})" for platform, url in urls.items())
-        return f"Latest build **[{tag}]({base}/tag/{tag})**{preview}\n\n{links}"
-    return "Downloads appear here after the first complete release."
+        number = version.group(1)
+        if number.count(".") == 1:
+            number += ".0"
+        return f"Latest build **[{tag}]({base}/tag/{tag})**{preview}\n\n{links}", number
+    return "Downloads appear here after the first complete release.", None
 
 
 def main():
@@ -43,10 +46,12 @@ def main():
     if not marker:
         raise ValueError("README download markers are out of order")
     releases = [release for page in json.load(sys.stdin) for release in page]
-    block = download_block(releases, sys.argv[1])
+    block, version = download_block(releases, sys.argv[1])
     updated = f"{prefix}{START}\n{block}\n{END}{suffix}"
     if updated != source:
         path.write_text(updated, encoding="utf-8")
+    if version:
+        Path("VERSION").write_text(version + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

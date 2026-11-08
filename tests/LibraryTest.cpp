@@ -23,6 +23,39 @@ void write(const QString &path, const QByteArray &bytes) {
 }
 
 int main() {
+    const QByteArray material = "/*{ invalid material metadata }*/\nvec4 materialColorForPixel(vec2 uv) { return vec4(uv, 0., 1.); }";
+    require(ShaderEntry{"material.fs", material, ISFScanner::header(material)}.type() == ISFType::MadMapper,
+            "MadMapper entry point should take precedence over the ISF header");
+    require(!ISFScanner::isMadMapperMaterial("// vec4 materialColorForPixel(vec2 uv) {}\nvoid main() {}"),
+            "Commented examples should not classify a shader as a Material");
+
+    require(ShaderEntry{"plain.fs", "/* GLSL comment */ void main() {}", {}}.type() == ISFType::NonISF,
+            "Plain fragment should be classified separately");
+    require(ShaderEntry{"broken.fs", "/* { \"INPUTS\": } */", {}}.type() == ISFType::Unknown,
+            "Malformed metadata should be reported as an error");
+    require(ShaderEntry{"broken.isf", "void main() {}", {}}.type() == ISFType::Unknown,
+            "Explicit ISF with no header should be reported as an error");
+
+    const QByteArray credited = "// Zebre — credit\n/* Attribution */\n/*{\"INPUTS\":[]}*/\nvoid main() {}";
+    require(ISFScanner::header(credited).has_value() && ISFScanner::headerStart(credited) == credited.indexOf("/*{"),
+            "ISF metadata may follow a comment preamble");
+
+    const QByteArray commas = R"(// Crédit
+/*{"DESCRIPTION":"Keep ,] and ,} inside the string","INPUTS":[{"NAME":"level",},],}*/
+void main() {})";
+    ISFScanner::HeaderError diagnostic;
+    require(!ISFScanner::header(commas, &diagnostic) && diagnostic.byteOffset > 0,
+            "Invalid JSON should have a source location");
+    const auto fixes = ISFScanner::trailingCommaFix(commas);
+    require(fixes.size() == 3, "Expected only the three trailing commas outside strings");
+    auto repaired = commas;
+    for (auto it = fixes.crbegin(); it != fixes.crend(); ++it) repaired.remove(*it, 1);
+    const auto repairedHeader = ISFScanner::header(repaired);
+    require(repairedHeader && repairedHeader->value("DESCRIPTION").toString() == "Keep ,] and ,} inside the string",
+            "Trailing comma repair modified a string");
+    require(ISFScanner::trailingCommaFix(R"(/*{"INPUTS":[,]}*/)").isEmpty(),
+            "An empty array entry should not be repaired as a trailing comma");
+
     QTemporaryDir root;
     require(root.isValid(), "Missing temporary directory");
     QDir dir(root.path());
@@ -64,6 +97,18 @@ int main() {
     require(header.has_value(), "Exported shader header is invalid");
     const auto path = header->value("IMPORTED").toObject().value("tex").toObject().value("PATH").toString();
     require(read(bundle + path) == "image bytes" && read(bundle + "Resource.vs") == "vertex source", "Dependency was lost");
+    const ShaderEntry original{dir.filePath("src/sub/Resource.fs"), bundled, header};
+    const ShaderEntry duplicate{bundle + "Resource.fs", bundled, header};
+    const auto fingerprint = shaderFingerprint(original);
+    require(fingerprint && shaderFingerprint(duplicate) == fingerprint,
+            "Identical shaders and dependency bytes should match");
+    require(QFile::remove(bundle + path), "Could not replace the exported test image");
+    write(bundle + path, "different image bytes");
+    require(shaderFingerprint(duplicate) && shaderFingerprint(duplicate) != fingerprint,
+            "Shaders with different imported images must not match");
+    require(QFile::remove(bundle + path) && !shaderFingerprint(duplicate),
+            "Missing dependencies must not match");
+    write(bundle + path, "image bytes");
     require(ISFScanner::categories(*ISFScanner::header(fx)).contains("Color"), "Missing category");
     require(!ISFScanner::header("void main() {} /*{}*/"), "JSON comment must lead source");
     require(ISFScanner::classify(*ISFScanner::header(R"(/*{"INPUTS":[{"NAME":"inputImage","TYPE":"float"}]}*/)")) ==

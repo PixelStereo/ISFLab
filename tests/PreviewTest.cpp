@@ -33,6 +33,38 @@ int main(int argc, char **argv) {
                 if (preview.grabFramebuffer() == image) qFatal("The FX test card did not animate");
             }
         }
+        const QByteArray material = R"glsl(/*{
+            "INPUTS":[{"NAME":"speed","TYPE":"float","DEFAULT":0.5},
+                      {"NAME":"circlesCount","TYPE":"int","DEFAULT":2}],
+            "GENERATORS":[{"NAME":"phase","TYPE":"time_base","PARAMS":{"speed":"speed"}}],
+            "IMPORTED":[{"NAME":"noiseLUT","PATH":"noiseLUT.png"}],
+        }*/
+            #define NOISE_TEXTURE_BASED
+            #include "MadNoise.glsl"
+            in mat3 materialTransform;
+            vec4 materialColorForPixel(vec2 uv) {
+                return vec4(materialTransform[0][0], noise(uv * float(circlesCount)) * 0.5 + 0.5, uv.x, 1.0);
+            })glsl";
+        const auto materialHeader = ISFScanner::materialHeader(material);
+        if (!materialHeader) qFatal("Material header could not be parsed");
+        QTemporaryDir materialFixture;
+        QFile materialVertex(materialFixture.filePath("Material.vs"));
+        const QByteArray materialVertexCode = R"(
+            out mat3 materialTransform;
+            void materialVsFunc(vec2 uv) { materialTransform = mat3(phase); }
+        )";
+        if (!materialFixture.isValid() || !materialVertex.open(QIODevice::WriteOnly) ||
+            materialVertex.write(materialVertexCode) != materialVertexCode.size())
+            qFatal("Could not write the Material vertex fixture");
+        materialVertex.close();
+        preview.load(material, *materialHeader, materialFixture.filePath("Material.fs"));
+        preview.seek(1.0);
+        const auto materialImage = preview.grabFramebuffer();
+        if (status != "Preview compiled" || materialImage.isNull())
+            qFatal("Material preview failed: %s", qPrintable(status));
+        if (qAbs(materialImage.pixelColor(materialImage.width() / 2, materialImage.height() / 2).red() - 128) > 2)
+            qFatal("Material time_base did not follow the preview clock");
+
         const QByteArray transition = R"(/*{"INPUTS":[
             {"NAME":"startImage","TYPE":"image"},{"NAME":"endImage","TYPE":"image"},
             {"NAME":"progress","TYPE":"float","DEFAULT":0}]}*/

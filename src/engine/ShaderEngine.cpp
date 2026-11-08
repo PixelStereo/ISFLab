@@ -19,6 +19,51 @@
 #include <QOpenGLPaintDevice>
 #include <QVector3D>
 
+static void initializeMaterialResources() {
+    Q_INIT_RESOURCE(madmapper);
+}
+
+namespace {
+const QString materialResourceRoot = ":/madmapper/";
+
+QByteArray expandMaterialIncludes(const QByteArray &source, const QString &path, int firstLine,
+                                  int sourceId, QStringList &files, QString &error, int depth = 0) {
+    static const QRegularExpression directive(
+        R"rx(^[ \t]*#[ \t]*include[ \t]+"([^"\r\n]+)"[ \t]*(?://[^\r\n]*)?\r?$)rx");
+    QByteArray result;
+    int lineNumber = firstLine;
+    for (const auto &line : source.split('\n')) {
+        const auto match = directive.match(QString::fromUtf8(line));
+        if (!match.hasMatch()) {
+            result += line + '\n';
+        } else {
+            const auto name = match.captured(1);
+            const auto local = QFileInfo(path).dir().filePath(name);
+            static const QStringList bundledIncludes{"MadCommon.glsl", "MadNoise.glsl", "MadSDF.glsl"};
+            const auto bundled = std::find_if(bundledIncludes.cbegin(), bundledIncludes.cend(),
+                [&](const QString &candidate) { return candidate.compare(name, Qt::CaseInsensitive) == 0; });
+            const auto resource = bundled == bundledIncludes.cend() ? QString{} : materialResourceRoot + *bundled;
+            const auto includePath = QDir::isRelativePath(name) && QFileInfo(local).isFile() ? local : resource;
+            QFile file(includePath);
+            if (depth >= 16 || files.size() >= 64 || !QDir::isRelativePath(name) ||
+                !file.open(QIODevice::ReadOnly) || file.size() > 1024 * 1024) {
+                error = QString("%1:%2: cannot expand Material include \"%3\".")
+                            .arg(path).arg(lineNumber).arg(name);
+                return {};
+            }
+            files.append(includePath);
+            const int includeId = files.size() - 1;
+            result += "#line 1 " + QByteArray::number(includeId) + "\n";
+            result += expandMaterialIncludes(file.readAll(), includePath, 1, includeId, files, error, depth + 1);
+            if (!error.isEmpty()) return {};
+            result += "#line " + QByteArray::number(lineNumber + 1) + " " + QByteArray::number(sourceId) + "\n";
+        }
+        ++lineNumber;
+    }
+    return result;
+}
+} // namespace
+
 struct ShaderEngine::ShaderInput {
     ShaderEngine engine;
     std::unique_ptr<QOpenGLFramebufferObject> output;
@@ -46,6 +91,7 @@ void ShaderEngine::release() {
 }
 
 void ShaderEngine::load(const QByteArray &code, const QJsonObject &metadata, const QString &file) {
+    emit glslDiagnostic({}, {}, {}, 0);
     const bool nextFx = !code.isEmpty() && ISFScanner::classify(metadata) == ISFType::FX;
     if (path != file || !nextFx) {
         liveInput.reset();
@@ -117,6 +163,7 @@ void ShaderEngine::setFilterEnabled(bool enabled) {
 
 void ShaderEngine::seek(double value) {
     resetHistory = true;
+    resetGenerators = true;
     videoClock.invalidate();
     time = value;
     frame = 0;
@@ -466,6 +513,11 @@ void ShaderEngine::compile() {
     if (source.isEmpty()) return;
     renderPasses.clear();
     resetHistory = true;
+    const bool material = ISFScanner::isMadMapperMaterial(source);
+    static const bool resourcesReady = [] { initializeMaterialResources(); return true; }();
+    Q_UNUSED(resourcesReady);
+    generators.clear();
+    resetGenerators = true;
     auto passes = header.value("PASSES").toArray();
     if (passes.isEmpty()) passes.append(QJsonObject{});
     if (passes.size() > 16) {
@@ -498,15 +550,39 @@ varying vec2 isf_FragNormCoord;
         const auto obj = entry.toObject();
         add(obj.value("NAME").toString(), obj.value("TYPE").toString());
     }
+    if (material) {
+        for (const auto &entry : header.value("GENERATORS").toArray()) {
+            const auto generator = entry.toObject();
+            const auto name = generator.value("NAME").toString();
+            const auto type = generator.value("TYPE").toString();
+            if (type != "time_base" || !identifier.match(name).hasMatch() || types.contains(name)) {
+                emit status(QString("Unsupported Material generator: %1 (%2)").arg(name, type));
+                return;
+            }
+            add(name, "float");
+            generators.insert(name, {generator.value("PARAMS").toObject(), 0});
+        }
+    }
+    QStringList missingImages;
     const auto imported = header.value("IMPORTED").toObject();
     for (auto it = imported.begin(); it != imported.end(); ++it) {
         const auto relative = it.value().toObject().value("PATH").toString();
         QImage image;
         if (!relative.isEmpty() && QDir::isRelativePath(relative))
             image.load(QFileInfo(path).dir().filePath(relative));
+        if (material && image.isNull() && QFileInfo(relative).fileName() == "noiseLUT.png")
+            image.load(materialResourceRoot + "noiseLUT.png");
         if (image.isNull()) {
-            emit status("Missing imported image: " + relative);
-            return;
+            if (!material) {
+                emit status("Missing imported image: " + relative);
+                return;
+            }
+            missingImages << QString("%1 (%2)").arg(relative, it.key());
+            image = QImage(256, 2, QImage::Format_RGBA8888);
+            const bool lut = QFileInfo(relative).completeBaseName().contains("lut", Qt::CaseInsensitive);
+            for (int x = 0; x < image.width(); ++x)
+                for (int y = 0; y < image.height(); ++y)
+                    image.setPixelColor(x, y, lut ? QColor(x, x, x) : QColor(128, 128, 128));
         }
         add(it.key(), "image");
         images[it.key()] = image;
@@ -527,10 +603,13 @@ varying vec2 isf_FragNormCoord;
                                 pass.value("WIDTH"), pass.value("HEIGHT"), {}, {}});
         if (!target.isEmpty()) add(target, "image");
     }
-    auto body = source.trimmed();
-    if (body.startsWith("\xef\xbb\xbf")) body = body.mid(3).trimmed();
-    const auto end = body.indexOf("*/", 2);
-    body = body.mid(end + 2);
+    const auto start = ISFScanner::headerStart(source);
+    const auto end = start < 0 ? -1 : source.indexOf("*/", start + 2);
+    if (end < 0) {
+        emit status("Invalid ISF JSON header.");
+        return;
+    }
+    const auto body = source.mid(end + 2);
     // GLSL 1.20 and GLSL ES 1.00 do not portably support token pasting.
     // Specialize the pixel helpers for each named ISF texture.
     QList<QPair<QRegularExpression, QString>> imageReplacements;
@@ -551,6 +630,8 @@ varying vec2 isf_FragNormCoord;
         return shader.toUtf8();
     };
     const auto vertexPath = ISFScanner::companionVertexPath(path);
+    QStringList includeFiles{path};
+    QStringList vertexIncludes{vertexPath};
     QByteArray vert = frag + R"(
 attribute vec2 position;
 void isf_vertShaderInit() {
@@ -573,17 +654,91 @@ void isf_vertShaderInit() {
             return;
         }
         if (vertexSource.startsWith("\xef\xbb\xbf")) vertexSource.remove(0, 3);
-        vert += "\n#line 1\n" + specializeImageCalls(QString::fromUtf8(vertexSource));
+        auto vertexBody = QString::fromUtf8(vertexSource);
+        if (material) {
+            QString error;
+            vertexBody = QString::fromUtf8(expandMaterialIncludes(vertexSource, vertexPath, 1, 0,
+                                                                  vertexIncludes, error));
+            if (!error.isEmpty()) {
+                emit glslDiagnostic("Material vertex include", vertexPath, error, 0);
+                emit status(error);
+                return;
+            }
+            static const QRegularExpression output(
+                R"rx(^([ \t]*)out(?=[ \t]+\w+[ \t]+\w+[ \t]*(?:\[|;)))rx",
+                QRegularExpression::MultilineOption);
+            vertexBody.replace(output, "\\1varying");
+            vert += "#define texture texture2D\n";
+        }
+        vert += "\n#line 1\n" + specializeImageCalls(vertexBody);
+        if (material)
+            vert += "\nvoid main() { isf_vertShaderInit(); materialVsFunc(isf_FragNormCoord); }\n";
     }
-    frag += "\n#line 1\n" + specializeImageCalls(QString::fromUtf8(body));
+    const int fragmentStartLine = source.left(end + 2).count('\n') + 1;
+    auto fragmentBody = body;
+    if (material) {
+        QString error;
+        fragmentBody = expandMaterialIncludes(body, path, fragmentStartLine, 0, includeFiles, error);
+        if (!error.isEmpty()) {
+            emit glslDiagnostic("Material include", path, error, 0);
+            emit status(error);
+            return;
+        }
+        // The legacy desktop preview context exposes GLSL 1.20. The bundled
+        // Material helpers use the newer spelling for 2D texture lookups.
+        frag += "#define texture texture2D\n";
+        static const QRegularExpression input(
+            R"rx(^([ \t]*)in(?=[ \t]+\w+[ \t]+\w+[ \t]*(?:\[|;)))rx",
+            QRegularExpression::MultilineOption);
+        auto materialBody = QString::fromUtf8(fragmentBody);
+        materialBody.replace(input, "\\1varying");
+        fragmentBody = materialBody.toUtf8();
+        fragmentBody += "\nvoid main() { gl_FragColor = materialColorForPixel(isf_FragNormCoord); }\n";
+    }
+    frag += "\n#line " + QByteArray::number(fragmentStartLine) + "\n"
+        + specializeImageCalls(QString::fromUtf8(fragmentBody));
     auto candidate = std::make_unique<QOpenGLShaderProgram>();
-    if (!candidate->addShaderFromSourceCode(QOpenGLShader::Vertex, vert) ||
-        !candidate->addShaderFromSourceCode(QOpenGLShader::Fragment, frag) || !candidate->link()) {
-        emit status(candidate->log());
+    const auto reportCompilerError = [&](const QString &stage, const QString &file, bool hasSource) {
+        const QString log = candidate->log().trimmed();
+        int line = 0;
+        auto diagnosticFile = file;
+        if (hasSource) {
+            // Common OpenGL formats are ERROR: 0:42: ..., 0:42(5): ... and 0(42) : ... .
+            static const QRegularExpression location(
+                R"rx((?:^|\n)\s*(?:ERROR\s*:\s*)?(\d+)(?:\s*:\s*(\d+)\b|\((\d+)\)))rx",
+                QRegularExpression::CaseInsensitiveOption);
+            const auto match = location.match(log);
+            if (match.hasMatch()) {
+                const int sourceId = match.captured(1).toInt();
+                if (sourceId == 0) line = match.captured(match.capturedLength(2) ? 2 : 3).toInt();
+                else if (const auto &files = stage == "Vertex shader" ? vertexIncludes : includeFiles;
+                         material && sourceId < files.size()) {
+                    diagnosticFile = files.at(sourceId);
+                    line = match.captured(match.capturedLength(2) ? 2 : 3).toInt();
+                }
+            }
+        }
+        emit glslDiagnostic(stage, diagnosticFile, log, line);
+        emit status(stage + " failed" + (log.isEmpty() ? "." : ": " + log));
+    };
+    if (!candidate->addShaderFromSourceCode(QOpenGLShader::Vertex, vert)) {
+        reportCompilerError("Vertex shader", vertexPath, !vertexPath.isEmpty());
+        return;
+    }
+    if (!candidate->addShaderFromSourceCode(QOpenGLShader::Fragment, frag)) {
+        reportCompilerError("Fragment shader", path, true);
+        return;
+    }
+    if (!candidate->link()) {
+        reportCompilerError("Shader linking", {}, false);
         return;
     }
     program = std::move(candidate);
     emit status("Preview compiled");
+    if (!missingImages.isEmpty())
+        emit glslDiagnostic("Material warning", path,
+            "Preview uses substitute textures. Restore these files for the original appearance:\n" +
+            missingImages.join('\n'), 0);
 }
 
 void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
@@ -712,7 +867,9 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
             }
             auto texture = std::make_unique<QOpenGLTexture>(glImage(image), QOpenGLTexture::DontGenerateMipMaps);
             texture->setMinMagFilters(QOpenGLTexture::Linear, QOpenGLTexture::Linear);
-            texture->setWrapMode(QOpenGLTexture::ClampToEdge);
+            const auto imageSettings = header.value("IMPORTED").toObject().value(it.key()).toObject();
+            texture->setWrapMode(imageSettings.value("GL_TEXTURE_WRAP").toString() == "REPEAT"
+                ? QOpenGLTexture::Repeat : QOpenGLTexture::ClampToEdge);
             textures.emplace_back(it.key(), std::move(texture));
         }
     }
@@ -736,6 +893,22 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
         else if (type == "vec3") program->setUniformValue(name, it.value().value<QVector3D>());
         else if (type == "vec4") program->setUniformValue(name, it.value().value<QVector4D>());
     }
+    for (auto it = generators.begin(); it != generators.end(); ++it) {
+        const auto &parameters = it->parameters;
+        const auto parameter = [&](const char *key, const QVariant &fallback) {
+            const auto entry = parameters.value(key);
+            if (entry.isString()) return values.value(entry.toString(), fallback);
+            return entry.isUndefined() ? fallback : entry.toVariant();
+        };
+        double speed = parameter("speed", 1.0).toDouble();
+        const double curve = parameter("speed_curve", 1.0).toDouble();
+        if (speed != 0 && curve > 0) speed = std::copysign(std::pow(std::abs(speed), curve), speed);
+        if (parameter("reverse", false).toBool()) speed = -speed;
+        if (parameter("link_speed_to_global_bpm", false).toBool()) speed *= 2.0; // 120 BPM
+        it->elapsed = resetGenerators ? time * speed : it->elapsed + delta * speed;
+        program->setUniformValue(it.key().toUtf8(), float(it->elapsed));
+    }
+    resetGenerators = false;
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     const int position = program->attributeLocation("position");
     program->enableAttributeArray(position);

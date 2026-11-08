@@ -15,6 +15,7 @@
 #include <QFormLayout>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QDockWidget>
 #include <QDragEnterEvent>
@@ -32,6 +33,7 @@
 #include <QMenuBar>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPaintEvent>
 #include <QMessageBox>
 #include <QAbstractButton>
 #include <QApplication>
@@ -48,13 +50,18 @@
 #include <QSettings>
 #include <QScreen>
 #include <QTimer>
+#include <QThread>
+#include <QProgressBar>
+#include <atomic>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTabWidget>
+#include <QTabBar>
 #include <QTableWidget>
 #include <QTextCursor>
+#include <QTextBlock>
 #include <QTemporaryDir>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
@@ -124,6 +131,65 @@ private:
     QPointF position;
 };
 
+class SourceEditor final : public QPlainTextEdit {
+public:
+    SourceEditor() : gutter(new LineNumbers(this)) {
+        connect(this, &QPlainTextEdit::blockCountChanged, this, [this] { layoutGutter(); });
+        connect(this, &QPlainTextEdit::updateRequest, this, [this](const QRect &rect, int dy) {
+            if (dy) gutter->scroll(0, dy);
+            else gutter->update(0, rect.y(), gutter->width(), rect.height());
+        });
+        connect(this, &QPlainTextEdit::cursorPositionChanged, gutter, [this] { gutter->update(); });
+        layoutGutter();
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override {
+        QPlainTextEdit::resizeEvent(event);
+        layoutGutter();
+    }
+
+    void changeEvent(QEvent *event) override {
+        QPlainTextEdit::changeEvent(event);
+        if (event->type() == QEvent::FontChange) layoutGutter();
+    }
+
+private:
+    class LineNumbers final : public QWidget {
+    public:
+        explicit LineNumbers(SourceEditor *editor) : QWidget(editor), editor(editor) {}
+    protected:
+        void paintEvent(QPaintEvent *event) override { editor->paintGutter(event->rect()); }
+    private:
+        SourceEditor *editor;
+    };
+
+    void layoutGutter() {
+        const int digits = QString::number(qMax(1, blockCount())).size();
+        const int width = 14 + digits * fontMetrics().horizontalAdvance('9');
+        if (viewportMargins().left() != width) setViewportMargins(width, 0, 0, 0);
+        const auto rect = contentsRect();
+        gutter->setGeometry(rect.left(), rect.top(), width, rect.height());
+    }
+
+    void paintGutter(const QRect &area) {
+        QPainter painter(gutter);
+        painter.fillRect(area, palette().color(QPalette::Window));
+        painter.setFont(font());
+        const auto current = textCursor().blockNumber();
+        for (auto block = firstVisibleBlock(); block.isValid(); block = block.next()) {
+            const int top = qRound(blockBoundingGeometry(block).translated(contentOffset()).top());
+            if (top > area.bottom()) break;
+            if (!block.isVisible() || top + blockBoundingRect(block).height() < area.top()) continue;
+            painter.setPen(palette().color(block.blockNumber() == current ? QPalette::Text : QPalette::PlaceholderText));
+            painter.drawText(QRect(0, top, gutter->width() - 7, fontMetrics().height()),
+                             Qt::AlignRight | Qt::AlignVCenter, QString::number(block.blockNumber() + 1));
+        }
+    }
+
+    LineNumbers *gutter;
+};
+
 class SourceHighlighter final : public QSyntaxHighlighter {
 public:
     explicit SourceHighlighter(QTextDocument *document) : QSyntaxHighlighter(document) {}
@@ -136,6 +202,11 @@ protected:
         if (state == BeforeSource) {
             while (offset < line.size() && line.at(offset).isSpace()) ++offset;
             if (offset == line.size()) {
+                setCurrentBlockState(BeforeSource);
+                return;
+            }
+            if (line.mid(offset, 2) == "//") {
+                setFormat(offset, line.size() - offset, QColor("#83918d"));
                 setCurrentBlockState(BeforeSource);
                 return;
             }
@@ -330,6 +401,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     exportMenu->addAction(zipAction);
     exportMenu->addSeparator();
     exportMenu->addAction(organizeAction);
+    exportMenu->addAction("Repair Filtered ERR…", this, [this] {
+        QStringList paths;
+        for (const auto &entry : std::as_const(entries))
+            if (binType(entry) == ISFType::Unknown && matches(entry)) paths << entry.path;
+        repairErrors(paths);
+    });
     exportMenu->addAction("Move ERR to Folder…", this, &MainWindow::moveErrors);
     auto *exportButton = new QToolButton;
     exportButton->setObjectName("command");
@@ -353,9 +430,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     search->addAction(AppStyle::icon(AppStyle::Icon::Search), QLineEdit::LeadingPosition);
     search->setClearButtonEnabled(true);
     auto *typeRow = new QWidget;
-    auto *typeLayout = new QHBoxLayout(typeRow);
-    typeLayout->setContentsMargins(0, 0, 0, 0);
+    auto *filterRows = new QVBoxLayout(typeRow);
+    filterRows->setContentsMargins(0, 0, 0, 0);
+    filterRows->setSpacing(4);
+    auto *typeLayout = new QHBoxLayout;
+    auto *otherTypes = new QHBoxLayout;
     typeLayout->setSpacing(4);
+    otherTypes->setSpacing(4);
+    filterRows->addLayout(typeLayout);
+    filterRows->addLayout(otherTypes);
     allTypes = new QPushButton("All");
     allTypes->setObjectName("allTypes");
     allTypes->setProperty("filterTab", true);
@@ -369,16 +452,20 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         }
         refresh();
     });
-    for (const auto kind : {ISFType::Generator, ISFType::FX, ISFType::Transition, ISFType::Unknown}) {
-        auto *tab = new QPushButton(kind == ISFType::Unknown ? "ERR" : kind == ISFType::FX ? "Filter" : ISFScanner::typeToString(kind));
+    for (const auto kind : {ISFType::Generator, ISFType::FX, ISFType::Transition, ISFType::Unknown, ISFType::NonISF, ISFType::MadMapper}) {
+        auto *tab = new QPushButton(kind == ISFType::MadMapper ? "MadMapper" : kind == ISFType::NonISF ? "Non-ISF" : kind == ISFType::Unknown ? "ERR" : kind == ISFType::FX ? "Filter" : ISFScanner::typeToString(kind));
         tab->setProperty("filterTab", true);
-        tab->setObjectName(kind == ISFType::Generator ? "generatorType" : kind == ISFType::FX ? "effectType" : kind == ISFType::Transition ? "transitionType" : "errorType");
+        tab->setObjectName(kind == ISFType::Generator ? "generatorType" : kind == ISFType::FX ? "effectType" : kind == ISFType::Transition ? "transitionType" : kind == ISFType::Unknown ? "errorType" : kind == ISFType::NonISF ? "nonIsfType" : "madMapperType");
         tab->setCheckable(true);
         tab->setChecked(true);
         tab->setToolTip(kind == ISFType::Unknown ? "Invalid headers and errors detected in preview." :
+                        kind == ISFType::NonISF ? "Fragment files without an ISF JSON header." :
+                        kind == ISFType::MadMapper ? "Materials with a MadMapper fragment entry point." :
                         "Toggle this shader type. Several types can be active.");
         typeTabs.insert(kind, tab);
-        typeLayout->addWidget(tab, 1);
+        auto *row = kind == ISFType::Generator || kind == ISFType::FX || kind == ISFType::Transition
+            ? typeLayout : otherTypes;
+        row->addWidget(tab, 1);
         connect(tab, &QPushButton::toggled, this, &MainWindow::refresh);
     }
     categoryButton = new QToolButton;
@@ -482,13 +569,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     left->addWidget(tree, 1);
     auto *footer = new QWidget;
     footer->setObjectName("libraryFooter");
-    auto *stats = new QHBoxLayout(footer);
-    stats->setContentsMargins(9, 5, 9, 5);
-    for (const auto kind : {ISFType::Generator, ISFType::FX, ISFType::Transition}) {
+    auto *footerLayout = new QVBoxLayout(footer);
+    footerLayout->setContentsMargins(9, 5, 9, 5);
+    footerLayout->setSpacing(2);
+    auto *stats = new QHBoxLayout;
+    auto *diagnosticCounts = new QHBoxLayout;
+    footerLayout->addLayout(stats);
+    footerLayout->addLayout(diagnosticCounts);
+    for (const auto kind : {ISFType::Generator, ISFType::FX, ISFType::Transition, ISFType::Unknown, ISFType::NonISF, ISFType::MadMapper}) {
         auto *label = plainLabel();
         label->setStyleSheet("color:" + AppStyle::typeColor(kind).name() + "; font-size:11px; font-weight:600;");
         typeCounts.insert(kind, label);
-        stats->addWidget(label, 1);
+        auto *row = kind == ISFType::Unknown || kind == ISFType::NonISF || kind == ISFType::MadMapper ? diagnosticCounts : stats;
+        row->addWidget(label, 1);
     }
     left->addWidget(footer);
     auto *clearBin = new QPushButton("Clear");
@@ -505,7 +598,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         clearSelection();
         refresh();
     });
-    left->addWidget(clearBin);
+    auto *duplicates = new QPushButton("Find Duplicates…");
+    connect(duplicates, &QPushButton::clicked, this, &MainWindow::findDuplicates);
+    auto *binActions = new QHBoxLayout;
+    binActions->addWidget(duplicates, 1);
+    binActions->addWidget(clearBin);
+    left->addLayout(binActions);
     auto *libraryDock = new QDockWidget("Library", this);
     libraryDock->setWidget(library);
     addDockWidget(Qt::LeftDockWidgetArea, libraryDock);
@@ -586,11 +684,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     transport->addWidget(playing); transport->addWidget(reset); transport->addWidget(timeline, 1);
     viewerLayout->addLayout(transport);
     previewStatus = plainLabel("Select a shader to preview.");
-    previewStatus->setWordWrap(true);
-    previewStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    previewStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     viewerLayout->addWidget(previewStatus);
     connect(preview, &ShaderPreview::status, this, [this](const QString &status) {
-        previewStatus->setText(status);
+        previewStatus->setText(status == "Preview compiled" ? status : "Preview error · See Diagnostics");
         if (active.isEmpty() || editor->document()->isModified() || !entries.value(active).header) return;
         if (status == "Preview compiled") {
             if (previewErrors.remove(active)) refresh();
@@ -623,7 +720,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     auto *codePanel = new QWidget;
     auto *codeLayout = new QVBoxLayout(codePanel);
-    editor = new QPlainTextEdit;
+    editor = new SourceEditor;
     new SourceHighlighter(editor->document());
     editor->setReadOnly(true);
     editor->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
@@ -846,6 +943,200 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     addHeaderTable("INPUTS", {"NAME", "TYPE", "LABEL", "DEFAULT", "IDENTITY", "MIN", "MAX", "VALUES", "LABELS"}, metadata);
     addHeaderTable("PASSES", {"TARGET", "WIDTH", "HEIGHT", "PERSISTENT", "FLOAT"});
 
+    auto *diagnostics = new QWidget;
+    auto *diagnosticLayout = new QVBoxLayout(diagnostics);
+    auto *diagnosticMessage = plainLabel();
+    diagnosticMessage->setWordWrap(true);
+    diagnosticMessage->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto *jumpToError = new QPushButton("Go to error");
+    auto *fixCommas = new QPushButton("Remove trailing commas");
+    auto *fixGlsl = new QPushButton("Apply suggested fix");
+    fixGlsl->hide();
+    diagnosticLayout->addWidget(diagnosticMessage);
+    diagnosticLayout->addWidget(jumpToError, 0, Qt::AlignLeft);
+    diagnosticLayout->addWidget(fixCommas, 0, Qt::AlignLeft);
+    diagnosticLayout->addWidget(fixGlsl, 0, Qt::AlignLeft);
+    diagnosticLayout->addStretch();
+    const int diagnosticTab = inspector->addTab(diagnostics, "Diagnostics");
+
+    struct CompilerDiagnostic {
+        QString stage, file, log;
+        int line = 0;
+    };
+    const auto compiler = std::make_shared<CompilerDiagnostic>();
+    auto *compilerLog = new QPlainTextEdit;
+    compilerLog->setReadOnly(true);
+    compilerLog->setFont(editor->font());
+    compilerLog->setVisible(false);
+    diagnosticLayout->insertWidget(1, compilerLog, 1);
+    const auto goToLine = [](QPlainTextEdit *view, int line) {
+        const auto block = view->document()->findBlockByNumber(line - 1);
+        if (!block.isValid()) return;
+        QTextCursor cursor(block);
+        view->setTextCursor(cursor);
+        view->setFocus();
+        view->ensureCursorVisible();
+    };
+
+    struct GlslFix {
+        int position;
+        int length;
+        QString from, to;
+    };
+    const auto suggestedFix = [this, compiler]() -> std::optional<GlslFix> {
+        if (compiler->stage != "Fragment shader" || compiler->file != active || compiler->line <= 0 ||
+            editor->toPlainText() != previewedSource)
+            return {};
+        const auto log = compiler->log.toLower();
+        if (!log.contains("undeclared") && !log.contains("not declared") && !log.contains("unknown identifier"))
+            return {};
+        const auto block = editor->document()->findBlockByNumber(compiler->line - 1);
+        if (!block.isValid()) return {};
+        const auto line = block.text().section("//", 0, 0);
+        const auto tokens = {
+            std::pair{"gl_FragColour", "gl_FragColor"},
+            std::pair{"isf_FragNormCoords", "isf_FragNormCoord"},
+            std::pair{"vv_FragNormCoords", "vv_FragNormCoord"},
+        };
+        for (const auto &token : tokens) {
+            const QString from = QString::fromLatin1(token.first);
+            const QRegularExpression word("\\b" + from + "\\b");
+            if (!word.match(compiler->log).hasMatch()) continue;
+            auto occurrences = word.globalMatch(line);
+            if (!occurrences.hasNext()) continue;
+            const auto match = occurrences.next();
+            if (occurrences.hasNext()) continue;
+            return GlslFix{block.position() + int(match.capturedStart()), int(match.capturedLength()),
+                           from, QString::fromLatin1(token.second)};
+        }
+        return {};
+    };
+
+    const auto updateDiagnostics = [=] {
+        const auto bytes = editor->toPlainText().toUtf8();
+        ISFScanner::HeaderError error;
+        const bool material = !active.isEmpty() && ISFScanner::isMadMapperMaterial(bytes);
+        const bool invalid = !active.isEmpty() && !ISFScanner::header(bytes, &error) &&
+                             !(material && ISFScanner::materialHeader(bytes));
+        const auto fixes = invalid ? ISFScanner::trailingCommaFix(bytes) : QList<qsizetype>{};
+        const bool showCompiler = !invalid && !active.isEmpty() && !compiler->stage.isEmpty();
+        inspector->setTabText(diagnosticTab, invalid || showCompiler ? "Diagnostics (1)" : "Diagnostics");
+        const bool warning = showCompiler && compiler->stage == "Material warning";
+        inspector->tabBar()->setTabTextColor(diagnosticTab, warning ? QColor("#e6bd8d") :
+                                             invalid || showCompiler ? QColor("#f17979") : QColor{});
+        compilerLog->setVisible(showCompiler);
+        const auto glslFix = showCompiler ? suggestedFix() : std::optional<GlslFix>{};
+        fixGlsl->setVisible(glslFix.has_value());
+        jumpToError->setEnabled(invalid || (showCompiler && compiler->line > 0 &&
+                                           editor->toPlainText() == previewedSource));
+        fixCommas->setEnabled(!fixes.isEmpty());
+        if (showCompiler) {
+            QString heading = compiler->stage;
+            if (!compiler->file.isEmpty()) heading += " · " + QFileInfo(compiler->file).fileName();
+            if (compiler->line > 0) heading += QString(" · line %1").arg(compiler->line);
+            if (editor->toPlainText() != previewedSource)
+                heading += "\nCompile the current edits to refresh this diagnostic.";
+            const auto log = compiler->log.toLower();
+            if (log.contains("undeclared") || log.contains("not declared"))
+                heading += "\nCheck the identifier spelling, its declaration, and its scope.";
+            else if (log.contains("no matching") || log.contains("cannot convert") || log.contains("type mismatch"))
+                heading += "\nCheck the types of the arguments and the expected GLSL signature.";
+            else if (log.contains("syntax error"))
+                heading += "\nCheck for missing punctuation or unmatched brackets near this line.";
+            if (glslFix)
+                heading += "\nSuggested fix: replace " + glslFix->from + " with " + glslFix->to + ".";
+            diagnosticMessage->setText(heading);
+            compilerLog->setPlainText(compiler->log.isEmpty() ? "The driver did not provide an error log." : compiler->log);
+            return;
+        }
+        if (!invalid) {
+            diagnosticMessage->setText(active.isEmpty() ? "Select a shader to see its diagnostics." :
+                                        material ? "MadMapper Material · 2D preview" : "No ISF header errors.");
+            return;
+        }
+        const auto position = fixes.isEmpty() ? error.byteOffset : fixes.first();
+        const auto prefix = QString::fromUtf8(bytes.left(position));
+        const auto line = prefix.count('\n') + 1;
+        const auto column = prefix.size() - prefix.lastIndexOf('\n');
+        const auto detail = fixes.isEmpty() ? error.message :
+            QString("%1 trailing comma(s) can be removed to repair the header.").arg(fixes.size());
+        diagnosticMessage->setText(QString("Line %1, column %2\n%3").arg(line).arg(column).arg(detail));
+    };
+    connect(editor, &QPlainTextEdit::textChanged, diagnostics, updateDiagnostics);
+    connect(preview, &ShaderPreview::glslDiagnostic, diagnostics,
+            [=](const QString &stage, const QString &file, const QString &log, int line) {
+        *compiler = {stage, file, log, line};
+        updateDiagnostics();
+    });
+    connect(preview, &ShaderPreview::status, diagnostics, [=](const QString &status) {
+        if (status == "Preview compiled") {
+            if (compiler->stage != "Material warning") *compiler = {};
+        } else if (compiler->stage.isEmpty() || compiler->stage == "Preview error" ||
+                   compiler->stage == "Material warning") {
+            *compiler = {"Preview error", active, status, 0};
+        }
+        updateDiagnostics();
+    });
+    connect(jumpToError, &QPushButton::clicked, diagnostics, [this, compiler, goToLine] {
+        const auto bytes = editor->toPlainText().toUtf8();
+        ISFScanner::HeaderError error;
+        if (ISFScanner::header(bytes, &error) ||
+            (ISFScanner::isMadMapperMaterial(bytes) && ISFScanner::materialHeader(bytes))) {
+            if (compiler->line <= 0 || editor->toPlainText() != previewedSource) return;
+            if (compiler->file == active || compiler->file.isEmpty()) {
+                goToLine(editor, compiler->line);
+            } else {
+                const auto vertex = readShader(compiler->file);
+                if (!vertex) {
+                    QMessageBox::warning(this, "Shader Source", "The shader source could not be read.");
+                    return;
+                }
+                QDialog dialog(this);
+                dialog.setWindowTitle(QFileInfo(compiler->file).fileName());
+                auto *layout = new QVBoxLayout(&dialog);
+                auto *view = new SourceEditor;
+                view->setPlainText(QString::fromUtf8(vertex->source));
+                view->setReadOnly(true);
+                view->setFont(editor->font());
+                layout->addWidget(view);
+                dialog.resize(700, 420);
+                goToLine(view, compiler->line);
+                dialog.exec();
+            }
+            return;
+        }
+        const auto fixes = ISFScanner::trailingCommaFix(bytes);
+        QTextCursor cursor(editor->document());
+        cursor.setPosition(QString::fromUtf8(bytes.left(fixes.isEmpty() ? error.byteOffset : fixes.first())).size());
+        editor->setTextCursor(cursor);
+        editor->setFocus();
+        editor->ensureCursorVisible();
+    });
+    connect(fixGlsl, &QPushButton::clicked, diagnostics, [this, suggestedFix] {
+        const auto fix = suggestedFix();
+        if (!fix) return;
+        QTextCursor cursor(editor->document());
+        cursor.setPosition(fix->position);
+        cursor.setPosition(fix->position + fix->length, QTextCursor::KeepAnchor);
+        cursor.insertText(fix->to);
+        applyPreview();
+        statusBar()->showMessage("Suggested fix applied in the editor. Save to update the file.", 5000);
+    });
+    connect(fixCommas, &QPushButton::clicked, diagnostics, [this] {
+        const auto bytes = editor->toPlainText().toUtf8();
+        const auto fixes = ISFScanner::trailingCommaFix(bytes);
+        if (fixes.isEmpty()) return;
+        QTextCursor cursor(editor->document());
+        cursor.beginEditBlock();
+        for (auto it = fixes.crbegin(); it != fixes.crend(); ++it) {
+            cursor.setPosition(QString::fromUtf8(bytes.left(*it)).size());
+            cursor.deleteChar();
+        }
+        cursor.endEditBlock();
+        statusBar()->showMessage("Trailing commas removed from the editor. Save to update the file.", 5000);
+    });
+    updateDiagnostics();
+
     auto *editorSplit = new QSplitter(Qt::Horizontal);
     editorSplit->setChildrenCollapsible(false);
     editorSplit->addWidget(codePanel);
@@ -886,6 +1177,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         if (paths.isEmpty()) return;
 
         QMenu menu(tree);
+        if (std::any_of(paths.cbegin(), paths.cend(), [this](const QString &path) {
+                return binType(entries.value(path)) == ISFType::Unknown;
+            })) {
+            menu.addAction("Repair Selected ERR…", this, [this, paths] { repairErrors(paths); });
+            menu.addSeparator();
+        }
         menu.addAction("Copy to Folder…", this, [this, paths] { actOnShaders(paths, FileAction::Copy); });
         menu.addAction("Move to Folder…", this, [this, paths] { actOnShaders(paths, FileAction::Move); });
 #ifdef Q_OS_MACOS
@@ -1120,6 +1417,8 @@ void MainWindow::refresh() {
         case ISFType::Generator: item->setText(1, "GEN"); break;
         case ISFType::FX: item->setText(1, "FX"); break;
         case ISFType::Transition: item->setText(1, "TRANS"); break;
+        case ISFType::NonISF: item->setText(1, "NON-ISF"); break;
+        case ISFType::MadMapper: item->setText(1, "MAD"); break;
         default: item->setText(1, "ERR"); break;
         }
         item->setToolTip(1, previewErrors.value(entry.path, ISFScanner::typeToString(kind)));
@@ -1137,7 +1436,9 @@ void MainWindow::refresh() {
     for (auto it = typeCounts.cbegin(); it != typeCounts.cend(); ++it) {
         const auto kind = it.key();
         const int shown = shownByType.value(kind), total = totalByType.value(kind);
-        const auto caption = kind == ISFType::Generator ? "Gen" : kind == ISFType::FX ? "FX" : "Trans";
+        const auto caption = kind == ISFType::Generator ? "Gen" : kind == ISFType::FX ? "FX" :
+            kind == ISFType::Transition ? "Trans" : kind == ISFType::Unknown ? "ERR" :
+            kind == ISFType::MadMapper ? "MadMapper" : "Non-ISF";
         it.value()->setText(QString("●  %1 %2").arg(shown == total ? QString::number(total) :
                             QString("%1/%2").arg(shown).arg(total)).arg(caption));
         it.value()->setToolTip(QString("%1 visible · %2 total").arg(shown).arg(total));
@@ -1201,6 +1502,7 @@ bool MainWindow::save() {
     }
     entry.source = source;
     entry.header = header;
+    entry.madMapper = ISFScanner::isMadMapperMaterial(source);
     previewErrors.remove(active);
     editor->document()->setModified(false);
     applyPreview();
@@ -1210,8 +1512,12 @@ bool MainWindow::save() {
 
 void MainWindow::writeHeader(const QJsonObject &header) {
     const auto source = editor->toPlainText();
-    const auto start = source.indexOf("/*");
+    const auto bytes = source.toUtf8();
+    const auto startByte = ISFScanner::headerStart(bytes);
+    if (startByte < 0) return;
+    const auto start = QString::fromUtf8(bytes.left(startByte)).size();
     const auto end = source.indexOf("*/", start + 2);
+    if (end < 0) return;
     auto json = QString::fromUtf8(QJsonDocument(header).toJson(QJsonDocument::Indented));
     json.replace("*/", "*\\/");
     QTextCursor cursor(editor->document());
@@ -1268,8 +1574,11 @@ void MainWindow::applyPreview() {
     previewedSource = editor->toPlainText();
     compilePreviewButton->setEnabled(false);
     const auto source = previewedSource.toUtf8();
-    const auto header = ISFScanner::header(source);
-    previewStatus->setText(header ? "Compiling preview…" : "Invalid ISF JSON header.");
+    const bool material = ISFScanner::isMadMapperMaterial(source);
+    const auto header = material ? ISFScanner::materialHeader(source) : ISFScanner::header(source);
+    previewStatus->setText(header ? "Compiling preview…" :
+        material ? "Invalid MadMapper Material header." :
+        entries.value(active).type() == ISFType::NonISF ? "No ISF JSON header." : "Invalid ISF JSON header.");
     preview->load(header ? source : QByteArray{}, header.value_or(QJsonObject{}), active);
     controls(header.value_or(QJsonObject{}));
 }
@@ -1735,46 +2044,288 @@ void MainWindow::actOnShaders(const QStringList &paths, FileAction action) {
     }
     if (paths.contains(active) && !resolveChanges()) return;
 
-    QStringList failures;
+    QStringList failures, removed;
     int done = 0;
+    const int total = int(paths.size());
+    std::atomic<int> processed{0};
+    std::atomic<bool> cancelled{false};
+    const auto snapshot = entries;
+    class FileProgressDialog final : public QDialog {
+    public:
+        FileProgressDialog(QWidget *parent, std::atomic<bool> &cancelled)
+            : QDialog(parent), cancelled(cancelled) {}
+        void reject() override { cancelled.store(true); }
+    private:
+        std::atomic<bool> &cancelled;
+    } progress(this, cancelled);
+    progress.setWindowTitle(title);
+    auto *progressLayout = new QVBoxLayout(&progress);
+    auto *message = plainLabel(title + "…");
+    auto *bar = new QProgressBar;
+    bar->setRange(0, total);
+    bar->setValue(0);
+    bar->setFormat("%v / %m");
+    auto *cancel = new QPushButton("Cancel");
+    progressLayout->addWidget(message);
+    progressLayout->addWidget(bar);
+    progressLayout->addWidget(cancel);
+    connect(cancel, &QPushButton::clicked, &progress, &QDialog::reject);
+
+    // Keep the bin locked while filesystem work runs off the UI thread.
+    auto worker = std::unique_ptr<QThread>(QThread::create([&] {
+        for (const auto &path : paths) {
+            if (cancelled.load()) break;
+            const auto process = [&] {
+                QFile file(path);
+                if (!file.open(QIODevice::ReadOnly))
+                    return file.errorString();
+                const auto bytes = file.readAll();
+                if (file.error() != QFileDevice::NoError)
+                    return file.errorString();
+                file.close();
+                if (!copy && bytes != snapshot.value(path).source)
+                    return QString("The file changed since it was imported.");
+                QString created;
+                if (!trash) {
+                    if (!copy && QFileInfo(path).absolutePath() == destination) return QString();
+                    const ShaderEntry entry{path, bytes, ISFScanner::header(bytes)};
+                    const auto error = copyShaderToFolder(entry, destination, created);
+                    if (!error.isEmpty()) return error;
+                }
+                if (!copy) {
+                    if (!file.moveToTrash())
+                        return file.errorString() + (created.isEmpty() ? QString() : "\nCopy kept at " + created);
+                    removed << path;
+                }
+                ++done;
+                return QString();
+            };
+            const auto error = process();
+            if (!error.isEmpty()) failures << path + ": " + error;
+            ++processed;
+        }
+    }));
+    QTimer updateProgress;
+    connect(&updateProgress, &QTimer::timeout, &progress, [&] {
+        bar->setValue(processed.load());
+        if (cancelled.load()) {
+            message->setText("Stopping after the current file…");
+            cancel->setEnabled(false);
+        }
+    });
+    connect(worker.get(), &QThread::finished, &progress, &QDialog::accept);
+    updateProgress.start(100);
+    worker->start();
+    progress.exec();
+    worker->wait();
+    updateProgress.stop();
+
     const QSignalBlocker blocker(tree);
-    for (const auto &path : paths) {
-        const auto entry = readShader(path);
-        if (!entry || (!copy && entry->source != entries.value(path).source)) {
-            failures << path + ": The file changed or could not be read.";
-            continue;
+    if (!removed.isEmpty() && removed.size() >= entries.size() / 2) {
+        tree->clear();
+        rows.clear();
+        groups.clear();
+    }
+    for (const auto &path : std::as_const(removed)) {
+        if (active == path) clearSelection();
+        entries.remove(path);
+        delete rows.take(path);
+        entryGroups.remove(path);
+        previewErrors.remove(path);
+    }
+    refresh();
+    const QString verb = trash ? "sent to the Trash" : copy ? "copied" : "moved";
+    QMessageBox result(failures.isEmpty() ? QMessageBox::Information : QMessageBox::Warning,
+                       title, QString("%1 shader(s) %2. %3 error(s).").arg(done).arg(verb).arg(failures.size()) +
+                           (cancelled.load() ? QString("\nOperation cancelled.") : QString()),
+                       QMessageBox::Ok, this);
+    result.setDetailedText(failures.join('\n'));
+    result.exec();
+}
+
+void MainWindow::findDuplicates() {
+    if (entries.isEmpty()) {
+        QMessageBox::information(this, "Find Duplicates", "Import shaders to look for duplicates.");
+        return;
+    }
+    const auto snapshot = entries;
+    QMap<QByteArray, QStringList> groupsByContent;
+    std::atomic<bool> cancelled{false};
+    int uncertain = 0;
+
+    QDialog scan(this);
+    scan.setWindowTitle("Find Duplicates");
+    auto *scanLayout = new QVBoxLayout(&scan);
+    scanLayout->addWidget(plainLabel("Comparing shader files and their dependencies…"));
+    auto *progress = new QProgressBar;
+    progress->setRange(0, 0);
+    scanLayout->addWidget(progress);
+
+    auto worker = std::unique_ptr<QThread>(QThread::create([&] {
+        QHash<QByteArray, QStringList> bySource;
+        for (const auto &entry : snapshot) {
+            if (cancelled.load()) return;
+            bySource[QCryptographicHash::hash(entry.source, QCryptographicHash::Sha256)].append(entry.path);
         }
-        QString created;
-        if (!trash) {
-            if (!copy && QFileInfo(path).absolutePath() == destination) continue;
-            const auto error = copyShaderToFolder(*entry, destination, created);
-            if (!error.isEmpty()) {
-                failures << path + ": " + error;
-                continue;
+        for (const auto &candidates : bySource) {
+            if (candidates.size() < 2) continue;
+            for (const auto &path : candidates) {
+                if (cancelled.load()) return;
+                const auto fingerprint = shaderFingerprint(snapshot.value(path));
+                if (fingerprint) groupsByContent[*fingerprint] << path;
+                else ++uncertain;
             }
         }
-        if (!copy) {
-            QFile file(path);
-            if (!file.moveToTrash()) {
-                failures << path + ": " + file.errorString() +
-                    (created.isEmpty() ? QString() : "\nCopy kept at " + created);
-                continue;
+    }));
+    connect(worker.get(), &QThread::finished, &scan, &QDialog::accept);
+    connect(&scan, &QDialog::rejected, &scan, [&] { cancelled.store(true); });
+    worker->start();
+    const auto scanned = scan.exec();
+    worker->wait();
+    if (scanned != QDialog::Accepted) return;
+
+    QDialog review(this);
+    review.setWindowTitle("Find Duplicates");
+    auto *layout = new QVBoxLayout(&review);
+    auto *summary = plainLabel();
+    summary->setWordWrap(true);
+    layout->addWidget(summary);
+    auto *results = new QTreeWidget;
+    results->setHeaderLabels({"Shader", "Path"});
+    results->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    layout->addWidget(results);
+    for (auto paths : groupsByContent) {
+        if (paths.size() < 2) continue;
+        paths.sort(Qt::CaseInsensitive);
+        if (paths.removeOne(active)) paths.prepend(active);
+        auto *group = new QTreeWidgetItem(results, {QString("%1 identical shaders").arg(paths.size())});
+        for (qsizetype i = 0; i < paths.size(); ++i) {
+            auto *row = new QTreeWidgetItem(group, {QFileInfo(paths.at(i)).fileName(), paths.at(i)});
+            row->setCheckState(0, i == 0 ? Qt::Unchecked : Qt::Checked);
+        }
+        group->setExpanded(true);
+    }
+    const int count = results->topLevelItemCount();
+    summary->setText(QString("%1 duplicate group(s). Leave at least one file unchecked in each group.\n"
+                             "%2 candidate(s) could not be compared safely.").arg(count).arg(uncertain));
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    auto *remove = buttons->addButton("Remove from Media Bin", QDialogButtonBox::ActionRole);
+    auto *trash = buttons->addButton("Move to Trash…", QDialogButtonBox::ActionRole);
+    remove->setEnabled(count > 0);
+    trash->setEnabled(count > 0);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, &review, &QDialog::reject);
+    const auto process = [&](bool deleteFiles) {
+        QStringList selected;
+        for (int i = 0; i < count; ++i) {
+            const auto *group = results->topLevelItem(i);
+            QStringList checked;
+            QString keeper;
+            for (int child = 0; child < group->childCount(); ++child) {
+                const auto *row = group->child(child);
+                if (row->checkState(0) == Qt::Checked) checked << row->text(1);
+                else if (keeper.isEmpty()) keeper = row->text(1);
             }
+            if (checked.isEmpty()) continue;
+            if (keeper.isEmpty()) {
+                QMessageBox::warning(&review, "Find Duplicates", "Leave at least one file unchecked in each group.");
+                return;
+            }
+            if (deleteFiles) {
+                const auto fingerprint = shaderFingerprint(snapshot.value(keeper));
+                for (const auto &path : checked) {
+                    if (!fingerprint || shaderFingerprint(snapshot.value(path)) != fingerprint) {
+                        QMessageBox::warning(&review, "Find Duplicates", "Files or dependencies changed. Run the scan again.");
+                        return;
+                    }
+                }
+            }
+            selected << checked;
+        }
+        if (selected.isEmpty()) return;
+        if (!deleteFiles && selected.contains(active) && !resolveChanges()) return;
+        review.accept();
+        if (deleteFiles) {
+            actOnShaders(selected, FileAction::Trash);
+            return;
+        }
+        const QSignalBlocker blocker(tree);
+        for (const auto &path : selected) {
             if (active == path) clearSelection();
             entries.remove(path);
             delete rows.take(path);
             entryGroups.remove(path);
             previewErrors.remove(path);
         }
-        ++done;
+        refresh();
+    };
+    connect(remove, &QPushButton::clicked, &review, [&] { process(false); });
+    connect(trash, &QPushButton::clicked, &review, [&] { process(true); });
+    review.resize(820, 460);
+    review.exec();
+}
+
+void MainWindow::repairErrors(const QStringList &paths) {
+    const QString title = "Repair ERR";
+    QMap<QString, QList<qsizetype>> repairs;
+    int errorCount = 0;
+    for (const auto &path : paths) {
+        const auto entry = entries.constFind(path);
+        if (entry == entries.cend() || binType(*entry) != ISFType::Unknown) continue;
+        ++errorCount;
+        if (path == active && editor->document()->isModified()) continue;
+        const auto commas = ISFScanner::trailingCommaFix(entry->source);
+        if (!commas.isEmpty()) repairs.insert(path, commas);
     }
+    if (repairs.isEmpty()) {
+        QMessageBox::information(this, title, QString(
+            "No safe automatic repair found for %1 shader(s) in error. Files with unsaved edits are skipped.")
+            .arg(errorCount));
+        return;
+    }
+    if (QMessageBox::question(this, title, QString(
+            "Remove trailing JSON commas and save %1 of %2 shader(s) in error?")
+            .arg(repairs.size()).arg(errorCount)) != QMessageBox::Yes) return;
+
+    QStringList failures;
+    int repaired = 0;
+    bool reloadActive = false;
+    for (auto it = repairs.cbegin(); it != repairs.cend(); ++it) {
+        const auto &path = it.key();
+        auto &entry = entries[path];
+        const auto disk = readShader(path);
+        if (!disk || QFileInfo(path).isSymLink() || disk->source != entry.source) {
+            failures << path + ": The original file is no longer available or has changed.";
+            continue;
+        }
+        auto source = disk->source;
+        for (auto comma = it.value().crbegin(); comma != it.value().crend(); ++comma)
+            source.remove(*comma, 1);
+        const auto header = ISFScanner::header(source);
+        if (!header) {
+            failures << path + ": The repaired header did not validate.";
+            continue;
+        }
+        QSaveFile file(path);
+        if (!file.open(QIODevice::WriteOnly) || file.write(source) != source.size() || !file.commit()) {
+            failures << path + ": " + file.errorString();
+            continue;
+        }
+        entry.source = source;
+        entry.header = header;
+        previewErrors.remove(path);
+        reloadActive |= active == path;
+        ++repaired;
+    }
+    if (reloadActive) select(active);
     refresh();
-    const QString verb = trash ? "sent to the Trash" : copy ? "copied" : "moved";
-    QMessageBox result(failures.isEmpty() ? QMessageBox::Information : QMessageBox::Warning,
-                       title, QString("%1 shader(s) %2. %3 error(s).").arg(done).arg(verb).arg(failures.size()),
-                       QMessageBox::Ok, this);
-    result.setDetailedText(failures.join('\n'));
-    result.exec();
+
+    QMessageBox report(this);
+    report.setWindowTitle(title);
+    report.setText(QString("%1 repaired · %2 skipped · %3 failed")
+        .arg(repaired).arg(errorCount - repairs.size()).arg(failures.size()));
+    if (!failures.isEmpty()) report.setDetailedText(failures.join('\n'));
+    report.exec();
 }
 
 void MainWindow::moveErrors() {
@@ -1894,7 +2445,7 @@ void MainWindow::report(const ExportReport &result, const QString &destination, 
     message.setTextFormat(Qt::PlainText);
     message.setIcon(result.errors.isEmpty() ? QMessageBox::Information : QMessageBox::Warning);
     auto summary = QString("%1 shader(s) %5 to Generators, FX and Transitions in:\n%2\n\n"
-                           "%3 invalid header(s) skipped. %4 error(s).")
+                           "%3 unsupported or invalid file(s) skipped. %4 error(s).")
                    .arg(result.copied).arg(QDir::toNativeSeparators(destination)).arg(result.skipped)
                    .arg(result.errors.size()).arg(zip ? "archived" : "copied");
     if (result.moved) summary += QString("\n%1 original shader(s) moved to the Trash.").arg(result.moved);

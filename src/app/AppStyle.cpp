@@ -10,7 +10,9 @@ QColor typeColor(ISFType type) {
     case ISFType::Generator: return QColor("#84cfab");
     case ISFType::FX: return QColor("#94bdf4");
     case ISFType::Transition: return QColor("#caadeb");
-    default: return QColor("#e6bd8d");
+    case ISFType::MadMapper: return QColor("#a5c9d6");
+    case ISFType::NonISF: return QColor("#e6bd8d");
+    default: return QColor("#e5a19b");
     }
 }
 
@@ -96,6 +98,10 @@ QPushButton#allTypes:checked { background:#8394b3; color:#1a1a1d; border-color:#
 QPushButton#generatorType { color:#84cfab; }
 QPushButton#effectType { color:#94bdf4; }
 QPushButton#transitionType { color:#caadeb; }
+QPushButton#madMapperType { color:#a5c9d6; }
+QPushButton#madMapperType:checked { background:#393940; border-bottom-color:#a5c9d6; }
+QPushButton#nonIsfType { color:#e6bd8d; }
+QPushButton#nonIsfType:checked { background:#393940; border-bottom-color:#e6bd8d; }
 QPushButton#errorType { color:#e5a19b; }
 QPushButton#errorType:checked { background:#393940; border-bottom-color:#e5a19b; }
 QPushButton#generatorType:checked { background:#393940; border-bottom-color:#84cfab; }
@@ -113,11 +119,11 @@ QCheckBox::indicator:checked { background:#8394b3; border:3px solid #46464c; wid
 QTreeWidget#shaderTree { background:#1e1e21; border:1px solid #3b3b41; border-radius:6px; padding:4px 3px; outline:0; }
 QTreeWidget#shaderTree::item { border:0; }
 QTabWidget::pane { border:1px solid #55555e; border-radius:6px; }
-QTabBar::tab { background:#25252b; color:#c3c3cd; padding:5px 11px; margin-right:3px;
+QTabBar::tab { background:#25252b; padding:5px 11px; margin-right:3px;
                font-weight:600; border:1px solid #62626e; border-bottom:3px solid #44444e;
                border-top-left-radius:4px; border-top-right-radius:4px; }
-QTabBar::tab:selected { background:#4c4c59; color:#f4f4f7; border-color:#9494a3; border-bottom-color:#8394b3; }
-QTabBar::tab:hover:!selected { background:#383841; color:#ffffff; }
+QTabBar::tab:selected { background:#4c4c59; border-color:#9494a3; border-bottom-color:#8394b3; }
+QTabBar::tab:hover:!selected { background:#383841; }
 QDockWidget { font-weight:600; color:#d9d9de; }
 QDockWidget::title { background:#2c2c32; padding:6px 10px; }
 QMenu { background:#2d2d32; color:#e1e1e4; border:1px solid #55555e; }

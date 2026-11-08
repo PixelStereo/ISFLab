@@ -5,6 +5,7 @@
 
 ShaderPreview::ShaderPreview(QWidget *parent) : QOpenGLWidget(parent) {
     connect(&engine, &ShaderEngine::status, this, &ShaderPreview::status);
+    connect(&engine, &ShaderEngine::glslDiagnostic, this, &ShaderPreview::glslDiagnostic);
     connect(&engine, &ShaderEngine::inputStatus, this, &ShaderPreview::inputStatus);
     connect(&engine, &ShaderEngine::testCardActiveChanged, this, &ShaderPreview::testCardActiveChanged);
     connect(&engine, &ShaderEngine::shaderInputError, this, &ShaderPreview::shaderInputError);

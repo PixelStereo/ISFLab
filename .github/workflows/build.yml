@@ -55,7 +55,7 @@ jobs:
             fi
             version="${BASH_REMATCH[1]}"
             if [[ -z "${BASH_REMATCH[2]}" ]]; then version="$version.0"; fi
-            args+=("-DISFLAB_BUILD_VERSION=$version")
+            args+=("-DISFLAB_TAG_VERSION=$version")
           fi
           case "$RUNNER_OS" in
             macOS)

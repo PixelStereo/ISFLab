@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.21)
-set(ISFLAB_BUILD_VERSION "0.0.1" CACHE STRING "ISFLab application version")
-project(ISFLab VERSION ${ISFLAB_BUILD_VERSION} LANGUAGES CXX)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" isflab_version LIMIT_COUNT 1)
+if(DEFINED ISFLAB_TAG_VERSION)
+    set(isflab_version "${ISFLAB_TAG_VERSION}")
+endif()
+project(ISFLab VERSION "${isflab_version}" LANGUAGES CXX)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets OpenGL OpenGLWidgets)
 set(CMAKE_CXX_STANDARD 17)
@@ -18,6 +22,10 @@ target_link_libraries(ISFLabCore PUBLIC Qt6::Core)
 add_library(ISFLabEngine STATIC src/engine/ShaderEngine.h src/engine/ShaderEngine.cpp)
 target_include_directories(ISFLabEngine PUBLIC src/engine src/engine/input)
 target_link_libraries(ISFLabEngine PUBLIC ISFLabCore Qt6::Gui Qt6::OpenGL)
+
+qt_add_resources(ISFLabEngine madmapper PREFIX "/madmapper" BASE "third_party/madmapper"
+    FILES third_party/madmapper/MadCommon.glsl third_party/madmapper/MadNoise.glsl
+          third_party/madmapper/MadSDF.glsl third_party/madmapper/noiseLUT.png)
 
 qt_add_executable(ISFLab WIN32 MACOSX_BUNDLE
     src/app/main.cpp
@@ -94,9 +102,19 @@ if(WIN32)
     target_sources(ISFLab PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/windows.rc")
 endif()
 
+set(madmapper_resources
+    third_party/madmapper/MadCommon.glsl
+    third_party/madmapper/MadNoise.glsl
+    third_party/madmapper/MadSDF.glsl
+    third_party/madmapper/noiseLUT.png
+    third_party/madmapper/LICENSE
+    third_party/madmapper/LICENSE-webgl-noise
+    third_party/madmapper/README.md
+)
 set(demo_shaders examples/ColorWave.fs examples/Invert.fs examples/Crossfade.fs)
 if(APPLE)
-    target_sources(ISFLab PRIVATE src/app/MacApplicationIcon.mm ${demo_shaders} third_party/syphon/License.txt assets/ISFLab.icns)
+    target_sources(ISFLab PRIVATE src/app/MacApplicationIcon.mm ${demo_shaders} third_party/syphon/License.txt assets/ISFLab.icns ${madmapper_resources})
+    set_source_files_properties(${madmapper_resources} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/madmapper")
     target_link_libraries(ISFLab PRIVATE "-framework AppKit")
     set_source_files_properties(assets/ISFLab.icns PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
     set_source_files_properties(third_party/syphon/License.txt PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/licenses")
@@ -120,6 +138,7 @@ if(WIN32)
 endif()
 if(NOT APPLE)
     install(FILES ${demo_shaders} DESTINATION examples)
+    install(FILES ${madmapper_resources} DESTINATION "${CMAKE_INSTALL_DATADIR}/isflab/madmapper")
 endif()
 if(APPLE OR WIN32 OR (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND Qt6_VERSION VERSION_GREATER_EQUAL 6.8))
     set(ISFLAB_MACOS_DEPLOY_LIBPATH "" CACHE PATH "Extra framework location for macdeployqt")

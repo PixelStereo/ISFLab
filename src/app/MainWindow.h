@@ -38,6 +38,8 @@ private:
     void exportFiltered(bool zip = false);
     void organize();
     void moveErrors();
+    void repairErrors(const QStringList &paths);
+    void findDuplicates();
     enum class FileAction { Copy, Move, Trash };
     void actOnShaders(const QStringList &paths, FileAction action);
     void clearSelection();

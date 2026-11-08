@@ -1,5 +1,7 @@
 #include "Library.h"
+#include <QCryptographicHash>
 #include <QDir>
+#include <QRegularExpression>
 #include <QFile>
 #include <QFileInfo>
 #include <QTemporaryDir>
@@ -134,11 +136,45 @@ ExportReport exportShaders(const QList<ShaderEntry> &entries, const QString &des
     }
     if (!report.errors.isEmpty()) return report;
     for (const auto &entry : entries) {
-        if (!entry.header) { ++report.skipped; continue; }
+        if (!entry.header || entry.type() == ISFType::MadMapper) { ++report.skipped; continue; }
         QString created;
         const auto error = copyEntry(entry, QDir(root.filePath(ISFScanner::typeFolder(entry.type()))), created);
         if (error.isEmpty()) { ++report.copied; report.copiedFiles.insert(entry.path, created); }
         else report.errors << entry.path + ": " + error;
     }
     return report;
+}
+
+std::optional<QByteArray> shaderFingerprint(const ShaderEntry &entry) {
+    if (!entry.header || entry.madMapper) return {};
+    static const QRegularExpression includes(R"rx(^\s*#\s*include\b)rx",
+                                              QRegularExpression::MultilineOption);
+    if (includes.match(QString::fromUtf8(entry.source)).hasMatch()) return {};
+    QFile fragment(entry.path);
+    if (!fragment.open(QIODevice::ReadOnly) || fragment.readAll() != entry.source ||
+        fragment.error() != QFileDevice::NoError) return {};
+
+    QCryptographicHash fingerprint(QCryptographicHash::Sha256);
+    fingerprint.addData(QCryptographicHash::hash(entry.source, QCryptographicHash::Sha256));
+    const auto vertex = ISFScanner::companionVertexPath(entry.path);
+    fingerprint.addData(vertex.isEmpty() ? QByteArrayView("0") : QByteArrayView("1"));
+    if (!vertex.isEmpty()) {
+        QFile file(vertex);
+        if (!file.open(QIODevice::ReadOnly)) return {};
+        const auto code = file.readAll();
+        if (file.error() != QFileDevice::NoError || includes.match(QString::fromUtf8(code)).hasMatch()) return {};
+        fingerprint.addData(QCryptographicHash::hash(code, QCryptographicHash::Sha256));
+    }
+    const auto imports = entry.header->value("IMPORTED");
+    if (!imports.isUndefined() && !imports.isObject()) return {};
+    const auto folder = QFileInfo(entry.path).dir();
+    for (const auto &item : imports.toObject()) {
+        const auto relative = item.toObject().value("PATH").toString();
+        if (relative.isEmpty() || !QDir::isRelativePath(relative)) return {};
+        QFile image(folder.filePath(relative));
+        QCryptographicHash imageHash(QCryptographicHash::Sha256);
+        if (!image.open(QIODevice::ReadOnly) || !imageHash.addData(&image)) return {};
+        fingerprint.addData(imageHash.result());
+    }
+    return fingerprint.result();
 }

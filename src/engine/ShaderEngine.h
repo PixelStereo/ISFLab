@@ -44,6 +44,7 @@ public:
     void setImage(const QString &name, const QImage &image);
 signals:
     void status(const QString &message);
+    void glslDiagnostic(const QString &stage, const QString &file, const QString &log, int line);
     void inputStatus(const QString &message);
     void testCardActiveChanged(bool active);
     void shaderInputError(const QString &name, const QString &message);
@@ -86,5 +87,11 @@ private:
     double time = 0;
     int frame = 0;
     bool playing = true, dirty = true, imagesDirty = true;
+    struct TimeGenerator {
+        QJsonObject parameters;
+        double elapsed = 0;
+    };
+    QHash<QString, TimeGenerator> generators;
+    bool resetGenerators = true;
     GLuint vbo = 0;
 };
