@@ -38,6 +38,8 @@ private:
     void exportFiltered(bool zip = false);
     void organize();
     void moveErrors();
+    enum class FileAction { Copy, Move, Trash };
+    void actOnShaders(const QStringList &paths, FileAction action);
     void clearSelection();
     ISFType binType(const ShaderEntry &entry) const;
     void report(const ExportReport &result, const QString &destination, bool zip = false);

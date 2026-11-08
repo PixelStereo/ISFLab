@@ -446,7 +446,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     tree->setIndentation(14);
     tree->setMouseTracking(true);
     tree->setItemDelegate(AppStyle::libraryDelegate(tree));
-    tree->setSelectionMode(QAbstractItemView::NoSelection);
+    tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    tree->setSelectionBehavior(QAbstractItemView::SelectRows);
     tree->setMinimumWidth(315);
     auto *flatToggle = new QCheckBox("Don’t show folder hierarchy");
     flatToggle->setToolTip("Show shaders in a flat list without folder rows.");
@@ -490,6 +491,21 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         stats->addWidget(label, 1);
     }
     left->addWidget(footer);
+    auto *clearBin = new QPushButton("Clear");
+    clearBin->setToolTip("Remove all items from the Media Bin.");
+    connect(clearBin, &QPushButton::clicked, this, [this] {
+        if (entries.isEmpty() || !resolveChanges()) return;
+        const QSignalBlocker blocker(tree);
+        tree->clear();
+        rows.clear();
+        groups.clear();
+        entries.clear();
+        entryGroups.clear();
+        previewErrors.clear();
+        clearSelection();
+        refresh();
+    });
+    left->addWidget(clearBin);
     auto *libraryDock = new QDockWidget("Library", this);
     libraryDock->setWidget(library);
     addDockWidget(Qt::LeftDockWidgetArea, libraryDock);
@@ -841,36 +857,63 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     addDockWidget(Qt::BottomDockWidgetArea, editorDock);
 
     const auto activateRow = [this](QTreeWidgetItem *item) {
-        if (!item) return;
+        const auto modifiers = QApplication::keyboardModifiers();
+        if (!item || (modifiers & (Qt::ControlModifier | Qt::ShiftModifier | Qt::MetaModifier)) ||
+            QApplication::mouseButtons().testFlag(Qt::RightButton)) return;
         const auto path = item->data(0, AppStyle::PathRole).toString();
         if (path.isEmpty() || path == active) return;
         if (resolveChanges()) select(path);
         else {
             const QSignalBlocker blocker(tree);
-            tree->setCurrentItem(rows.value(active));
+            tree->setCurrentItem(rows.value(active), 0, QItemSelectionModel::NoUpdate);
         }
     };
     connect(tree, &QTreeWidget::currentItemChanged, this, activateRow);
     connect(tree, &QTreeWidget::itemClicked, this, activateRow);
-#ifdef Q_OS_MACOS
     tree->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(tree, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint &position) {
-        const auto *item = tree->itemAt(position);
-        if (!item) return;
-        const auto path = item->data(0, AppStyle::PathRole).toString();
-        if (path.isEmpty()) return;
+        auto *item = tree->itemAt(position);
+        if (!item || item->data(0, AppStyle::PathRole).toString().isEmpty()) return;
+        if (!item->isSelected()) {
+            const QSignalBlocker blocker(tree);
+            tree->setCurrentItem(item, 0, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        }
+        QStringList paths;
+        for (const auto *row : tree->selectedItems()) {
+            const auto path = row->data(0, AppStyle::PathRole).toString();
+            if (!path.isEmpty() && !row->isHidden()) paths << path;
+        }
+        if (paths.isEmpty()) return;
 
         QMenu menu(tree);
-        auto *reveal = menu.addAction("Show in Finder");
-        reveal->setEnabled(QFileInfo(path).isFile());
-        if (menu.exec(tree->viewport()->mapToGlobal(position)) == reveal &&
-            !QProcess::startDetached("/usr/bin/open", {"-R", QFileInfo(path).absoluteFilePath()}))
-            statusBar()->showMessage("Could not show the shader in Finder.", 5000);
-    });
+        menu.addAction("Copy to Folder…", this, [this, paths] { actOnShaders(paths, FileAction::Copy); });
+        menu.addAction("Move to Folder…", this, [this, paths] { actOnShaders(paths, FileAction::Move); });
+#ifdef Q_OS_MACOS
+        if (paths.size() == 1) {
+            menu.addAction("Show in Finder", this, [this, path = paths.first()] {
+                if (!QProcess::startDetached("/usr/bin/open", {"-R", path}))
+                    statusBar()->showMessage("Could not show the shader in Finder.", 5000);
+            });
+        }
 #endif
+        menu.addSeparator();
+        menu.addAction("Move to Trash…", this, [this, paths] { actOnShaders(paths, FileAction::Trash); });
+        menu.exec(tree->viewport()->mapToGlobal(position));
+    });
     connect(search, &QLineEdit::textChanged, this, &MainWindow::refresh);
     controls({});
+    const QSettings session;
+    folder = session.value("mediaBin/lastFolder", folder).toString();
+    const auto savedEntries = session.value("mediaBin/entries").toMap();
+    for (auto it = savedEntries.cbegin(); it != savedEntries.cend(); ++it) {
+        if (const auto entry = readShader(it.key())) {
+            entries.insert(it.key(), *entry);
+            entryGroups.insert(it.key(), it.value().toString());
+        }
+    }
     refresh();
+    const auto selectedPath = session.value("mediaBin/active").toString();
+    if (auto *row = rows.value(selectedPath)) tree->setCurrentItem(row);
     if (!restoreGeometry(QSettings().value("mainWindow/geometry").toByteArray())) {
         if (const auto *display = screen()) {
             const auto available = display->availableGeometry();
@@ -901,7 +944,14 @@ void MainWindow::closeEvent(QCloseEvent *event) {
         event->ignore();
         return;
     }
-    QSettings().setValue("mainWindow/geometry", saveGeometry());
+    QSettings settings;
+    settings.setValue("mainWindow/geometry", saveGeometry());
+    QVariantMap savedEntries;
+    for (auto it = entryGroups.cbegin(); it != entryGroups.cend(); ++it)
+        savedEntries.insert(it.key(), it.value());
+    settings.setValue("mediaBin/entries", savedEntries);
+    settings.setValue("mediaBin/lastFolder", folder);
+    settings.setValue("mediaBin/active", active);
     event->accept();
 }
 
@@ -1026,6 +1076,7 @@ void MainWindow::refresh() {
             parent = groups.value(group);
             if (!parent) {
                 parent = new QTreeWidgetItem(tree);
+                parent->setFlags(parent->flags() & ~Qt::ItemIsSelectable);
                 auto label = QFileInfo(group).fileName();
                 auto owner = QFileInfo(group).dir();
                 QDir community = owner;
@@ -1093,7 +1144,7 @@ void MainWindow::refresh() {
     }
     if (inserted) tree->sortItems(0, Qt::AscendingOrder);
     if (!active.isEmpty() && rows.contains(active) && !rows.value(active)->isHidden())
-        tree->setCurrentItem(rows.value(active));
+        tree->setCurrentItem(rows.value(active), 0, QItemSelectionModel::NoUpdate);
     count->setText(QString("%1 of %2 shaders").arg(visible).arg(entries.size()));
 }
 
@@ -1663,6 +1714,67 @@ void MainWindow::clearSelection() {
     preview->load({}, {}, {});
     controls({});
     previewStatus->setText("Select a shader to preview.");
+}
+
+void MainWindow::actOnShaders(const QStringList &paths, FileAction action) {
+    const bool trash = action == FileAction::Trash;
+    const bool copy = action == FileAction::Copy;
+    const QString title = trash ? "Move to Trash" : copy ? "Copy to Folder" : "Move to Folder";
+    QString destination;
+    if (trash) {
+        if (QMessageBox::question(this, title, QString("Move %1 selected shader file(s) to the Trash?").arg(paths.size()))
+            != QMessageBox::Yes) return;
+    } else {
+        const auto chosen = QFileDialog::getExistingDirectory(this, title, folder);
+        if (chosen.isEmpty()) return;
+        destination = QFileInfo(chosen).canonicalFilePath();
+        if (destination.isEmpty() || !QFileInfo(destination).isDir()) {
+            QMessageBox::warning(this, title, "The destination folder is no longer available.");
+            return;
+        }
+    }
+    if (paths.contains(active) && !resolveChanges()) return;
+
+    QStringList failures;
+    int done = 0;
+    const QSignalBlocker blocker(tree);
+    for (const auto &path : paths) {
+        const auto entry = readShader(path);
+        if (!entry || (!copy && entry->source != entries.value(path).source)) {
+            failures << path + ": The file changed or could not be read.";
+            continue;
+        }
+        QString created;
+        if (!trash) {
+            if (!copy && QFileInfo(path).absolutePath() == destination) continue;
+            const auto error = copyShaderToFolder(*entry, destination, created);
+            if (!error.isEmpty()) {
+                failures << path + ": " + error;
+                continue;
+            }
+        }
+        if (!copy) {
+            QFile file(path);
+            if (!file.moveToTrash()) {
+                failures << path + ": " + file.errorString() +
+                    (created.isEmpty() ? QString() : "\nCopy kept at " + created);
+                continue;
+            }
+            if (active == path) clearSelection();
+            entries.remove(path);
+            delete rows.take(path);
+            entryGroups.remove(path);
+            previewErrors.remove(path);
+        }
+        ++done;
+    }
+    refresh();
+    const QString verb = trash ? "sent to the Trash" : copy ? "copied" : "moved";
+    QMessageBox result(failures.isEmpty() ? QMessageBox::Information : QMessageBox::Warning,
+                       title, QString("%1 shader(s) %2. %3 error(s).").arg(done).arg(verb).arg(failures.size()),
+                       QMessageBox::Ok, this);
+    result.setDetailedText(failures.join('\n'));
+    result.exec();
 }
 
 void MainWindow::moveErrors() {

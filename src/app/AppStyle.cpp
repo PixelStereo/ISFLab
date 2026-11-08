@@ -140,9 +140,10 @@ public:
         const auto rect = o.rect.adjusted(1, 1, -1, -1);
         p->save();
         p->setRenderHint(QPainter::Antialiasing);
-        if (active || o.state.testFlag(QStyle::State_MouseOver)) {
+        const bool selected = o.state.testFlag(QStyle::State_Selected);
+        if (active || selected || o.state.testFlag(QStyle::State_MouseOver)) {
             p->setPen(Qt::NoPen);
-            p->setBrush(active ? QColor("#48484f") : QColor("#343439"));
+            p->setBrush(selected ? QColor("#45536b") : active ? QColor("#48484f") : QColor("#343439"));
             p->drawRoundedRect(rect, 5, 5);
         }
         auto font = o.font;

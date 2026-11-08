@@ -41,7 +41,7 @@ QString copyEntry(const ShaderEntry &entry, QDir out, QString &created) {
     const auto stem = info.completeBaseName();
     const auto suffix = "." + info.suffix();
     const auto vertex = ISFScanner::companionVertexPath(entry.path);
-    const auto imports = entry.header->value("IMPORTED");
+    const auto imports = entry.header ? entry.header->value("IMPORTED") : QJsonValue(QJsonValue::Undefined);
     if (!imports.isUndefined() && !imports.isObject()) return "Invalid IMPORTED image declarations.";
     const auto imported = imports.toObject();
     if (vertex.isEmpty() && imported.isEmpty()) {
@@ -118,6 +118,10 @@ QStringList shaderFiles(const QString &folder, bool skipOrganized) {
     QStringList paths;
     collect(QDir(folder), paths, skipOrganized);
     return paths;
+}
+
+QString copyShaderToFolder(const ShaderEntry &entry, const QString &destination, QString &created) {
+    return copyEntry(entry, QDir(destination), created);
 }
 
 ExportReport exportShaders(const QList<ShaderEntry> &entries, const QString &destination) {

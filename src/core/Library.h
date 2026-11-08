@@ -18,3 +18,4 @@ struct ExportReport {
 
 QStringList shaderFiles(const QString &folder, bool skipOrganized = false);
 ExportReport exportShaders(const QList<ShaderEntry> &entries, const QString &destination);
+QString copyShaderToFolder(const ShaderEntry &entry, const QString &destination, QString &created);
