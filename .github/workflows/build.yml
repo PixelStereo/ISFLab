@@ -153,13 +153,17 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          flags=()
-          if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
-          gh release create "$RELEASE_TAG" "${flags[@]}" \
-            --verify-tag --generate-notes --title "ISFLab $RELEASE_TAG" \
-            release/ISFLab-macOS-arm64.zip \
-            release/ISFLab-Windows-x64.zip \
-            release/ISFLab-Linux-x64.tar.gz
+          assets=(release/ISFLab-macOS-arm64.zip release/ISFLab-Windows-x64.zip release/ISFLab-Linux-x64.tar.gz)
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+            gh release edit "$RELEASE_TAG" --draft=false
+          else
+            flags=()
+            if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
+            gh release create "$RELEASE_TAG" "${flags[@]}" \
+              --verify-tag --generate-notes --title "ISFLab $RELEASE_TAG" "${assets[@]}"
+          fi
+
 
   release-metadata:
     needs: release
