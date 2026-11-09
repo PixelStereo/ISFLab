@@ -29,6 +29,11 @@ public:
     void initialize();
     void release();
     void render(GLuint framebuffer, const QSize &viewportSize);
+    struct AudioFrame {
+        QList<QList<float>> wave, spectrum;
+    };
+    bool needsAudio() const;
+    void setAudioFrame(std::shared_ptr<const AudioFrame> frame);
     bool isPlaying() const { return playing; }
     bool canTrackPointer() const { return program && !fixedOutputError; }
     void load(const QByteArray &source, const QJsonObject &header, const QString &path);
@@ -96,6 +101,9 @@ private:
     };
     QHash<QString, TimeGenerator> generators;
     bool resetGenerators = true;
+    struct AudioTexture { bool spectrum; int width; };
+    QHash<QString, AudioTexture> audioTextures;
+    std::shared_ptr<const AudioFrame> audioFrame, uploadedAudio;
     QHash<QString, QJsonArray> materialChoices;
     QSet<QString> materialDefines;
     GLuint vbo = 0, vao = 0;

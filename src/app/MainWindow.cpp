@@ -5,6 +5,8 @@
 #include "SliderField.h"
 #include "ZipExport.h"
 #include <QAction>
+#include <QAudioDevice>
+#include <QMediaDevices>
 #include <QHeaderView>
 #include <QToolBar>
 #include <QStyledItemDelegate>
@@ -38,6 +40,7 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QKeySequence>
+#include <QShortcut>
 #include <QMimeData>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
@@ -342,6 +345,31 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     auto *zipAction = file->addAction("Export filtered ZIP…", this, [this] { exportFiltered(true); });
     auto *organizeAction = file->addAction("Organize a folder…", this, &MainWindow::organize);
     file->addSeparator();
+    auto *preferences = file->addAction("Preferences…", this, [this] {
+        QDialog dialog(this);
+        dialog.setWindowTitle("Preferences");
+        auto *layout = new QFormLayout(&dialog);
+        auto *input = new QComboBox;
+        input->addItem("System default", QByteArray{});
+        input->addItem("Disabled", QByteArray("disabled"));
+        for (const auto &device : QMediaDevices::audioInputs())
+            input->addItem(device.description(), device.id());
+        QSettings settings;
+        const auto saved = settings.value("audio/inputDevice", QByteArray{}).toByteArray();
+        if (input->findData(saved) < 0) input->addItem("Previously selected device (unavailable)", saved);
+        input->setCurrentIndex(input->findData(saved));
+        layout->addRow("Audio input", input);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+        layout->addRow(buttons);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        if (dialog.exec() != QDialog::Accepted) return;
+        const auto id = input->currentData().toByteArray();
+        settings.setValue("audio/inputDevice", id);
+        preview->setAudioDevice(id);
+    });
+    preferences->setMenuRole(QAction::PreferencesRole);
+    preferences->setShortcut(QKeySequence::Preferences);
     file->addAction("Quit", QKeySequence::Quit, this, &QWidget::close);
     const QIcon brandLogo(":/assets/ISFLab-rounded.png");
     auto *about = menuBar()->addMenu("&Help")->addAction("About ISFLab", this, [this, brandLogo] {
@@ -718,7 +746,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     paramsDock->setWidget(scroll);
     splitDockWidget(libraryDock, paramsDock, Qt::Horizontal);
 
-    auto *codePanel = sourceTabs = new QTabWidget;
+    auto *codePanel = new QWidget;
+    auto *codeLayout = new QVBoxLayout(codePanel);
+    codeLayout->setContentsMargins(0, 0, 0, 0);
+    sourceTabs = new QTabWidget;
+    codeLayout->addWidget(sourceTabs, 1);
     editor = new SourceEditor;
     new SourceHighlighter(editor->document());
     editor->setReadOnly(true);
@@ -730,6 +762,81 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     sourceTabs->addTab(editor, "Fragment (.fs)");
     sourceTabs->addTab(vertexEditor, "Vertex (.vs)");
     sourceTabs->setTabVisible(1, false);
+    auto *findBar = new QWidget(codePanel);
+    auto *findLayout = new QHBoxLayout(findBar);
+    findLayout->setContentsMargins(0, 0, 0, 0);
+    auto *findField = new QLineEdit;
+    findField->setPlaceholderText("Find in source…");
+    auto *previousMatch = new QPushButton("Previous");
+    auto *nextMatch = new QPushButton("Next");
+    auto *closeFind = new QPushButton("Close");
+    auto *findStatus = plainLabel();
+    findLayout->addWidget(findField, 1);
+    findLayout->addWidget(findStatus);
+    findLayout->addWidget(previousMatch);
+    findLayout->addWidget(nextMatch);
+    findLayout->addWidget(closeFind);
+    codeLayout->addWidget(findBar);
+    findBar->hide();
+
+    const auto currentSource = [this] {
+        return qobject_cast<QPlainTextEdit *>(sourceTabs->currentWidget());
+    };
+    const auto findMatch = [=](bool backward, bool includeCurrent) {
+        auto *source = currentSource();
+        const auto query = findField->text();
+        findStatus->clear();
+        if (!source || query.isEmpty()) return;
+        const auto flags = backward ? QTextDocument::FindFlags(QTextDocument::FindBackward)
+                                    : QTextDocument::FindFlags{};
+        auto cursor = source->textCursor();
+        cursor.setPosition(backward || includeCurrent ? cursor.selectionStart() : cursor.selectionEnd());
+        auto match = source->document()->find(query, cursor, flags);
+        if (match.isNull()) {
+            cursor.movePosition(backward ? QTextCursor::End : QTextCursor::Start);
+            match = source->document()->find(query, cursor, flags);
+        }
+        if (match.isNull()) findStatus->setText("No matches");
+        else {
+            source->setTextCursor(match);
+            source->ensureCursorVisible();
+        }
+    };
+    const auto hideFind = [=] {
+        findBar->hide();
+        if (auto *source = currentSource()) source->setFocus();
+    };
+    const auto shortcut = [codePanel](const QKeySequence &key, auto callback) {
+        auto *action = new QShortcut(key, codePanel);
+        action->setContext(Qt::WidgetWithChildrenShortcut);
+        QObject::connect(action, &QShortcut::activated, codePanel, callback);
+    };
+    shortcut(QKeySequence(Qt::CTRL | Qt::Key_F), [=] {
+        auto *source = currentSource();
+        if (!source) return;
+        const auto selection = source->textCursor().selectedText();
+        findBar->show();
+        if (!selection.isEmpty() && !selection.contains(QChar::ParagraphSeparator))
+            findField->setText(selection);
+        findField->setFocus();
+        findField->selectAll();
+    });
+    shortcut(QKeySequence(Qt::CTRL | Qt::Key_G), [=] { findMatch(false, false); });
+    shortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G), [=] { findMatch(true, false); });
+    auto *escapeFind = new QShortcut(QKeySequence(Qt::Key_Escape), findBar);
+    escapeFind->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(escapeFind, &QShortcut::activated, findBar, hideFind);
+    connect(closeFind, &QPushButton::clicked, findBar, hideFind);
+    connect(previousMatch, &QPushButton::clicked, findBar, [=] { findMatch(true, false); });
+    connect(nextMatch, &QPushButton::clicked, findBar, [=] { findMatch(false, false); });
+    connect(findField, &QLineEdit::returnPressed, findBar, [=] { findMatch(false, false); });
+    connect(findField, &QLineEdit::textChanged, findBar, [=] { findMatch(false, true); });
+    connect(sourceTabs, &QTabWidget::currentChanged, findBar, [=] {
+        findStatus->clear();
+        if (!currentSource()) findBar->hide();
+        else if (findBar->isVisible()) findMatch(false, true);
+    });
+
     auto *editorDock = new QDockWidget("ISF Editor", this);
     auto *inspector = new QTabWidget;
     auto *metadata = new QWidget;
@@ -1620,6 +1727,51 @@ void MainWindow::savePreviewDefaults() {
     if (save()) statusBar()->showMessage("Shader defaults saved.", 4000);
 }
 
+void MainWindow::updateImageTabs(const QJsonObject &header) {
+    const auto previous = sourceTabs->currentWidget()->property("imagePath").toString();
+    while (sourceTabs->count() > 2) {
+        auto *page = sourceTabs->widget(2);
+        sourceTabs->removeTab(2);
+        delete page;
+    }
+
+    const auto imported = header.value("IMPORTED").toObject();
+    QSet<QString> seen;
+    for (auto it = imported.constBegin(); it != imported.constEnd(); ++it) {
+        const auto relative = it.value().toObject().value("PATH").toString();
+        if (relative.isEmpty() || !QDir::isRelativePath(relative)) continue;
+        const auto path = QDir::cleanPath(QFileInfo(active).dir().filePath(relative));
+        if (seen.contains(path)) continue;
+        seen.insert(path);
+
+        auto *page = new QScrollArea;
+        page->setProperty("imagePath", path);
+        page->setAlignment(Qt::AlignCenter);
+        auto *image = plainLabel("Loading image…");
+        image->setAlignment(Qt::AlignCenter);
+        page->setWidget(image);
+        const auto loadImage = [=, loaded = false](int index) mutable {
+            if (loaded || sourceTabs->widget(index) != page) return;
+            loaded = true;
+            QImageReader reader(path);
+            reader.setAutoTransform(true);
+            const auto size = reader.size();
+            if (size.width() > 2048 || size.height() > 2048)
+                reader.setScaledSize(size.scaled(2048, 2048, Qt::KeepAspectRatio));
+            const auto pixels = reader.read();
+            if (pixels.isNull())
+                image->setText(QString("Cannot open image: %1\n%2").arg(relative, reader.errorString()));
+            else
+                image->setPixmap(QPixmap::fromImage(pixels));
+            image->adjustSize();
+        };
+        connect(sourceTabs, &QTabWidget::currentChanged, page, loadImage);
+        const int index = sourceTabs->addTab(page, QFileInfo(path).fileName());
+        sourceTabs->setTabToolTip(index, relative);
+        if (previous == path) sourceTabs->setCurrentIndex(index);
+    }
+}
+
 void MainWindow::applyPreview() {
     if (active.isEmpty()) return;
     previewedSource = editor->toPlainText();
@@ -1631,6 +1783,7 @@ void MainWindow::applyPreview() {
         entries.value(active).type() == ISFType::NonISF ? "No ISF JSON header." : "Invalid ISF JSON header.");
     preview->load(header ? source : QByteArray{}, header.value_or(QJsonObject{}), active);
     controls(header.value_or(QJsonObject{}));
+    updateImageTabs(header.value_or(QJsonObject{}));
 }
 
 void MainWindow::controls(const QJsonObject &header) {
@@ -1997,7 +2150,10 @@ void MainWindow::controls(const QJsonObject &header) {
             layout->addWidget(chooseShader);
             layout->addWidget(sourceStatus);
         } else if (kind == "audio" || kind == "audioFFT") {
-            parameters->addWidget(plainLabel("Live audio is unavailable in preview."));
+            auto *source = plainLabel(preview->audioStatus());
+            source->setWordWrap(true);
+            connect(preview, &ShaderPreview::audioStatusChanged, source, &QLabel::setText);
+            parameters->addWidget(source);
         }
     }
     const bool hasDefaults = std::any_of(inputs.begin(), inputs.end(), [](const QJsonValue &entry) {
@@ -2072,6 +2228,7 @@ void MainWindow::clearSelection() {
     vertexEditor->document()->setModified(false);
     sourceTabs->setCurrentIndex(0);
     sourceTabs->setTabVisible(1, false);
+    updateImageTabs({});
     editor->clear();
     editor->document()->setModified(false);
     editor->setReadOnly(true);

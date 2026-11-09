@@ -234,6 +234,19 @@ void ShaderEngine::setShaderInput(const QString &name, const QByteArray &code,
     shaderInputs[name] = std::move(input);
 }
 
+bool ShaderEngine::needsAudio() const {
+    for (const auto &entry : header.value("INPUTS").toArray()) {
+        const auto type = entry.toObject().value("TYPE").toString();
+        if (type == "audio" || type == "audioFFT") return true;
+    }
+    return std::any_of(shaderInputs.begin(), shaderInputs.end(),
+        [](const auto &entry) { return entry.second->engine.needsAudio(); });
+}
+
+void ShaderEngine::setAudioFrame(std::shared_ptr<const AudioFrame> frame) {
+    audioFrame = std::move(frame);
+}
+
 void ShaderEngine::renderShaderInputs(GLuint framebuffer, const QSize &viewportSize) {
     const QSize dimensions(640, 360);
     for (auto &[name, input] : shaderInputs) {
@@ -248,6 +261,7 @@ void ShaderEngine::renderShaderInputs(GLuint framebuffer, const QSize &viewportS
         }
         if (!input->output->isValid()) continue;
         if (input->engine.isPlaying() != playing) input->engine.setPlaying(playing);
+        input->engine.setAudioFrame(audioFrame);
         input->engine.render(input->output->handle(), dimensions);
         const bool usable = input->engine.program && input->engine.bufferError.isEmpty();
         if (!usable && !input->status.isEmpty())
@@ -528,6 +542,7 @@ void ShaderEngine::compile() {
     bufferError.clear();
     textures.clear();
     types.clear();
+    audioTextures.clear();
     if (source.isEmpty()) return;
     renderPasses.clear();
     resetHistory = true;
@@ -575,6 +590,10 @@ varying vec2 isf_FragNormCoord;
         const auto name = obj.value("NAME").toString();
         const auto type = obj.value("TYPE").toString();
         add(name, type);
+        if (type == "audio" || type == "audioFFT") {
+            const int width = obj.value("MAX").toInt(material ? obj.value("SIZE").toInt() : 0);
+            audioTextures.insert(name, {type == "audioFFT", qMax(0, width)});
+        }
         if (materialDefines.contains(name)) {
             const auto selected = values.value(name);
             const auto choices = materialChoices.value(name);
@@ -900,6 +919,10 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
             if (it.value() != "sampler2D") continue;
             if (std::any_of(renderPasses.begin(), renderPasses.end(),
                             [&](const RenderPass &pass) { return pass.target == it.key(); })) continue;
+            if (audioTextures.contains(it.key())) {
+                textures.emplace_back(it.key(), nullptr);
+                continue;
+            }
             auto image = images.value(it.key());
             if (image.isNull() && ISFScanner::classify(header) == ISFType::Transition &&
                 (it.key() == "startImage" || it.key() == "endImage"))
@@ -917,6 +940,56 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
                 ? QOpenGLTexture::Repeat : QOpenGLTexture::ClampToEdge);
             textures.emplace_back(it.key(), std::move(texture));
         }
+    }
+    if (!audioTextures.isEmpty()) {
+        const bool changed = uploadedAudio != audioFrame;
+        const bool useFloat = !QOpenGLContext::currentContext()->isOpenGLES() &&
+                              QOpenGLContext::currentContext()->format().majorVersion() >= 3;
+        for (auto &[name, texture] : textures) {
+            const auto input = audioTextures.constFind(name);
+            if (input == audioTextures.cend() || (!changed && texture)) continue;
+            const QList<QList<float>> empty;
+            const auto &channels = audioFrame ? (input->spectrum ? audioFrame->spectrum : audioFrame->wave) : empty;
+            const int height = qMax(1, int(channels.size()));
+            const int nativeWidth = input->spectrum ? 1024 : 2048;
+            const int width = qMin(textureLimit, input->width > 0 ? input->width : nativeWidth);
+            if (!texture || texture->width() != width || texture->height() != height) {
+                texture = std::make_unique<QOpenGLTexture>(QOpenGLTexture::Target2D);
+                texture->setFormat(useFloat ? QOpenGLTexture::RGBA32F : QOpenGLTexture::RGBA8_UNorm);
+                texture->setSize(width, height);
+                texture->allocateStorage(QOpenGLTexture::RGBA, useFloat ? QOpenGLTexture::Float32 : QOpenGLTexture::UInt8);
+                texture->setMinMagFilters(QOpenGLTexture::Linear, QOpenGLTexture::Linear);
+                texture->setWrapMode(QOpenGLTexture::ClampToEdge);
+            }
+            QList<float> pixels(width * height * 4, 1.f);
+            for (int y = 0; y < height; ++y) {
+                const QList<float> silence;
+                const auto &samples = y < channels.size() ? channels.at(y) : silence;
+                for (int x = 0; x < width; ++x) {
+                    float value = input->spectrum ? 0.f : 0.5f;
+                    if (!samples.isEmpty()) {
+                        const int start = x * samples.size() / width;
+                        const int end = qMax(start + 1, int((x + 1) * samples.size() / width));
+                        float sum = 0.f;
+                        for (int i = start; i < end; ++i) {
+                            const float sample = samples.at(i);
+                            sum += !input->spectrum && width == 1 ? sample * sample : sample;
+                        }
+                        const float mean = sum / (end - start);
+                        value = input->spectrum ? mean : width == 1 ? std::sqrt(mean) : 0.5f + 0.5f * mean;
+                    }
+                    const auto offset = (y * width + x) * 4;
+                    pixels[offset] = pixels[offset + 1] = pixels[offset + 2] = qBound(0.f, value, 1.f);
+                }
+            }
+            if (useFloat) texture->setData(QOpenGLTexture::RGBA, QOpenGLTexture::Float32, pixels.constData());
+            else {
+                QByteArray bytes(pixels.size(), Qt::Uninitialized);
+                for (qsizetype i = 0; i < pixels.size(); ++i) bytes[i] = char(qRound(pixels.at(i) * 255.f));
+                texture->setData(QOpenGLTexture::RGBA, QOpenGLTexture::UInt8, bytes.constData());
+            }
+        }
+        uploadedAudio = audioFrame;
     }
     const float delta = playing && frame > 0 ? qMin(clock.restart() / 1000.0, 0.25) : 0.0;
     if (delta == 0) clock.restart();

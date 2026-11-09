@@ -2,6 +2,8 @@
 #include "ShaderEngine.h"
 #include <QOpenGLWidget>
 
+class QAudioSource;
+
 class ShaderPreview : public QOpenGLWidget {
     Q_OBJECT
 public:
@@ -20,8 +22,11 @@ public:
     void useTestCard();
     void setLiveInput(std::unique_ptr<LiveInput> input);
     void setShaderInput(const QString &name, const QByteArray &source, const QJsonObject &header, const QString &path);
+    void setAudioDevice(const QByteArray &id);
+    QString audioStatus() const { return audioMessage; }
     void setImage(const QString &name, const QImage &image);
 signals:
+    void audioStatusChanged(const QString &message);
     void status(const QString &message);
     void glslDiagnostic(const QString &stage, const QString &file, const QString &log, int line);
     void inputStatus(const QString &message);
@@ -36,10 +41,16 @@ protected:
     void initializeGL() override;
     void paintGL() override;
 private:
+    void syncAudio();
+    void setAudioStatus(const QString &message);
     void reportPointer(const QPointF &position);
     void releaseEngine();
     QSize viewportSize() const;
     ShaderEngine engine;
+    std::unique_ptr<QAudioSource> audioSource;
+    QByteArray audioDeviceId, runningAudioDevice, audioBuffer;
+    QString audioMessage;
+    bool microphoneRequestPending = false;
     QSize reportedRenderSize;
     QMetaObject::Connection contextCleanup;
 };

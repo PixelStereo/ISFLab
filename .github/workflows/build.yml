@@ -27,7 +27,7 @@ jobs:
           submodules: true
       - name: Install macOS Qt
         if: runner.os == 'macOS'
-        run: brew install qtbase
+        run: brew install qt
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
         with:
@@ -36,6 +36,7 @@ jobs:
         if: runner.os != 'macOS'
         with:
           version: '6.8.3'
+          modules: qtmultimedia
           arch: ${{ runner.os == 'Windows' && 'win64_msvc2022_64' || 'linux_gcc_64' }}
           cache: true
       - name: Install Linux build dependencies
@@ -59,7 +60,7 @@ jobs:
           fi
           case "$RUNNER_OS" in
             macOS)
-              qt_prefix="$(brew --prefix qtbase)"
+              qt_prefix="$(brew --prefix qt)"
               args+=("-DCMAKE_PREFIX_PATH=$qt_prefix" "-DISFLAB_MACOS_DEPLOY_LIBPATH=$qt_prefix/lib")
               ;;
             Linux) args+=(-DISFLAB_TEST_OPENGL=ON) ;;

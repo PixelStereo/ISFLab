@@ -34,6 +34,23 @@ int main(int argc, char **argv) {
                 if (preview.grabFramebuffer() == image) qFatal("The FX test card did not animate");
             }
         }
+        preview.setAudioDevice("disabled");
+        const QByteArray audio = R"glsl(/*{"INPUTS":[
+            {"NAME":"wave","TYPE":"audio","MAX":64},
+            {"NAME":"spectrum","TYPE":"audioFFT","MAX":32}
+        ]}*/
+        void main() {
+            gl_FragColor = vec4(IMG_NORM_THIS_PIXEL(wave).r, IMG_NORM_THIS_PIXEL(spectrum).r,
+                               (IMG_SIZE(wave).x + IMG_SIZE(spectrum).x) / 255.0, 1.0);
+        })glsl";
+        preview.load(audio, *ISFScanner::header(audio), {});
+        const auto audioImage = preview.grabFramebuffer();
+        if (status != "Preview compiled" || audioImage.isNull())
+            qFatal("Audio input preview failed: %s", qPrintable(status));
+        const auto silence = audioImage.pixelColor(audioImage.width() / 2, audioImage.height() / 2);
+        if (qAbs(silence.red() - 128) > 1 || silence.green() != 0 || qAbs(silence.blue() - 96) > 1)
+            qFatal("Audio silence or requested texture width is incorrect");
+
         const QByteArray material = R"glsl(/*{
             "INPUTS":[{"NAME":"speed","TYPE":"float","DEFAULT":0.5},
                       {"NAME":"circlesCount","TYPE":"int","DEFAULT":2},

@@ -22,7 +22,7 @@ Latest build **[v0.1.1](https://github.com/PixelStereo/ISFLab/releases/tag/v0.1.
 
 Clone with `git clone --recurse-submodules https://github.com/PixelStereo/ISFLab.git`.
 
-Build with **Qt 6.5+** (Widgets, OpenGL and OpenGL Widgets), **CMake 3.21+** and a **C++17** compiler.
+Build with **Qt 6.5+** (Widgets, OpenGL, OpenGL Widgets and Multimedia), **CMake 3.21+** and a **C++17** compiler.
 
 ```sh
 ./build.sh

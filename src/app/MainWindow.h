@@ -30,6 +30,7 @@ private:
     void refresh();
     void select(const QString &path);
     void applyPreview();
+    void updateImageTabs(const QJsonObject &header);
     void writeHeader(const QJsonObject &header);
     void savePreviewDefaults();
     bool save();
