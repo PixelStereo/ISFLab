@@ -76,7 +76,7 @@ struct ShaderEngine::ShaderInput {
     }
 };
 
-ShaderEngine::ShaderEngine() { clock.start(); }
+ShaderEngine::ShaderEngine() { clock.start(); materialClock.start(); }
 ShaderEngine::~ShaderEngine() = default;
 
 void ShaderEngine::release() {
@@ -105,6 +105,7 @@ void ShaderEngine::load(const QByteArray &code, const QJsonObject &metadata, con
     header = metadata;
     path = file;
     values.clear();
+    eventCounts.clear();
     materialChoices.clear();
     materialDefines.clear();
     const bool material = ISFScanner::isMadMapperMaterial(code);
@@ -127,14 +128,17 @@ void ShaderEngine::load(const QByteArray &code, const QJsonObject &metadata, con
             if (!choices.isEmpty() && !choices.contains(QJsonValue(initial))) initial = choices.first().toInt();
             values.insert(name, initial);
         } else if (type == "bool") values.insert(name, value.toBool(value.toInt() != 0));
-        else if (type == "event") values.insert(name, false);
-        else if (type == "point2D" || type == "point3D" || type == "color") {
+        else if (type == "event") {
+            values.insert(name, false);
+            eventCounts.insert(name, 0);
+        }
+        else if (type == "point2D" || type == "floatRange" || type == "point3D" || type == "color") {
             const auto components = value.toArray();
             const auto coordinate = [&](int index) {
                 const double fallback = type == "color" ? 1.0 : 0.0;
                 return components.size() > index ? components.at(index).toDouble(fallback) : fallback;
             };
-            if (type == "point2D") values.insert(name, QVariant::fromValue(QVector2D(coordinate(0), coordinate(1))));
+            if (type == "point2D" || type == "floatRange") values.insert(name, QVariant::fromValue(QVector2D(coordinate(0), coordinate(1))));
             else if (type == "point3D")
                 values.insert(name, QVariant::fromValue(QVector3D(coordinate(0), coordinate(1), coordinate(2))));
             else values.insert(name, QVariant::fromValue(QVector4D(qBound(0., coordinate(0), 1.),
@@ -186,6 +190,7 @@ void ShaderEngine::seek(double value) {
 }
 void ShaderEngine::setValue(const QString &name, const QVariant &value) {
     if (materialDefines.contains(name) && values.value(name) != value) dirty = true;
+    if (auto event = eventCounts.find(name); event != eventCounts.end() && value.toBool()) ++event.value();
     values[name] = value;
 }
 QVariant ShaderEngine::value(const QString &name) const {
@@ -550,6 +555,7 @@ void ShaderEngine::compile() {
     static const bool resourcesReady = [] { initializeMaterialResources(); return true; }();
     Q_UNUSED(resourcesReady);
     generators.clear();
+    generatorOrder.clear();
     resetGenerators = true;
     auto passes = header.value("PASSES").toArray();
     if (passes.isEmpty()) passes.append(QJsonObject{});
@@ -574,9 +580,14 @@ varying vec2 isf_FragNormCoord;
 #define IMG_NORM_PIXEL(img, p) texture2D(img, p)
 #define IMG_NORM_THIS_PIXEL(img) texture2D(img, isf_FragNormCoord)
 )";
+    if (material) {
+        frag += "uniform float CLOCK_TIME;\n";
+        if (modern) frag += "#define IMG_NORM_PIXEL_LOD(img, uv, lod) textureLod(img, uv, lod)\n"
+                            "#define IMG_TEXEL_FETCH(img, uv, lod) texelFetch(img, uv, int(lod))\n";
+    }
     const QHash<QString, QString> glTypes = {
         {"float","float"}, {"bool","bool"}, {"event","bool"}, {"long","int"},
-        {"point2D","vec2"}, {"point3D","vec3"}, {"color","vec4"}, {"image","sampler2D"}, {"audio","sampler2D"}, {"audioFFT","sampler2D"}
+        {"point2D","vec2"}, {"floatRange","vec2"}, {"point3D","vec3"}, {"color","vec4"}, {"image","sampler2D"}, {"audio","sampler2D"}, {"audioFFT","sampler2D"}
     };
     const QRegularExpression identifier("^[a-zA-Z_][a-zA-Z_0-9]*$");
     const auto add = [&](const QString &name, const QString &type) {
@@ -612,12 +623,33 @@ varying vec2 isf_FragNormCoord;
             const auto generator = entry.toObject();
             const auto name = generator.value("NAME").toString();
             const auto type = generator.value("TYPE").toString();
-            if ((type != "time_base" && type != "animator") || !identifier.match(name).hasMatch() || types.contains(name)) {
+            if ((type != "time_base" && type != "animator" && type != "incrementer" && type != "multiplier" && type != "pass_thru") || !identifier.match(name).hasMatch() || types.contains(name)) {
                 emit status(QString("Unsupported Material generator: %1 (%2)").arg(name, type));
                 return;
             }
             add(name, "float");
-            generators.insert(name, {generator.value("PARAMS").toObject(), type == "animator"});
+            generators.insert(name, {generator.value("PARAMS").toObject(), type});
+        }
+    }
+    QSet<QString> visiting, ordered;
+    const auto orderGenerator = [&](const auto &visit, const QString &name) -> bool {
+        if (ordered.contains(name)) return true;
+        if (visiting.contains(name)) return false;
+        visiting.insert(name);
+        const auto &parameters = generators.constFind(name)->parameters;
+        for (const auto &parameter : parameters) {
+            const auto dependency = parameter.toString();
+            if (generators.contains(dependency) && !visit(visit, dependency)) return false;
+        }
+        visiting.remove(name);
+        ordered.insert(name);
+        generatorOrder.append(name);
+        return true;
+    };
+    for (const auto &name : generators.keys()) {
+        if (!orderGenerator(orderGenerator, name)) {
+            emit status("Circular Material generator dependency: " + name);
+            return;
         }
     }
     QStringList missingImages;
@@ -998,6 +1030,7 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
     const auto now = QDateTime::currentDateTime();
     program->bind();
     program->setUniformValue("TIME", float(time));
+    program->setUniformValue("CLOCK_TIME", float(materialClock.elapsed() / 1000.0));
     program->setUniformValue("TIMEDELTA", delta);
     program->setUniformValue("FRAMEINDEX", frame);
     program->setUniformValue("DATE", float(now.date().year()), float(now.date().month()),
@@ -1011,13 +1044,41 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
         else if (type == "vec3") program->setUniformValue(name, it.value().value<QVector3D>());
         else if (type == "vec4") program->setUniformValue(name, it.value().value<QVector4D>());
     }
-    for (auto it = generators.begin(); it != generators.end(); ++it) {
+    QHash<QString, double> generatorOutputs;
+    for (const auto &name : generatorOrder) {
+        auto it = generators.find(name);
+        const auto publish = [&](double output) {
+            generatorOutputs.insert(name, output);
+            program->setUniformValue(name.toUtf8(), float(output));
+        };
         const auto &parameters = it->parameters;
         const auto parameter = [&](const char *key, const QVariant &fallback) {
             const auto entry = parameters.value(key);
-            if (entry.isString()) return values.value(entry.toString(), fallback);
+            if (entry.isString()) {
+                const auto reference = entry.toString();
+                if (generatorOutputs.contains(reference)) return QVariant(generatorOutputs.value(reference));
+                return values.value(reference, fallback);
+            }
             return entry.isUndefined() ? fallback : entry.toVariant();
         };
+        if (it->type == "incrementer") {
+            const auto increments = eventCounts.value(parameters.value("increment").toString());
+            const auto decrements = eventCounts.value(parameters.value("decrement").toString());
+            publish(double(increments - decrements));
+            continue;
+        }
+        if (it->type == "multiplier") {
+            publish(parameter("value1", 1.).toDouble() * parameter("value2", 1.).toDouble() *
+                    parameter("value3", 1.).toDouble() * parameter("value4", 1.).toDouble());
+            continue;
+        }
+        if (it->type == "pass_thru") {
+            const auto channel = parameters.value("input_value").toString();
+            if (channel == "/custom/BPM/bpm") publish(120.);
+            else if (channel == "/custom/BPM/bpmPos") publish(time * 2.);
+            else publish(parameter("input_value", 0.).toDouble());
+            continue;
+        }
         double speed = parameter("speed", 1.0).toDouble();
         const double curve = parameter("speed_curve", 1.0).toDouble();
         if (speed != 0 && curve > 0) speed = std::copysign(std::pow(std::abs(speed), curve), speed);
@@ -1032,7 +1093,7 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
         else if (resetGenerators || std::floor(time / strob) != std::floor((time - delta) / strob))
             it->sampled = it->elapsed - std::fmod(time, strob) * speed;
         double output = it->sampled;
-        if (it->animator) {
+        if (it->type == "animator") {
             const auto shapeRef = parameters.value("shape").toString("Smooth");
             const auto choices = materialChoices.value(shapeRef);
             const int index = values.value(shapeRef, -1).toInt();
@@ -1056,7 +1117,7 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
                 output = 0.5 - 0.5 * std::cos(tau * phase);
             }
         }
-        program->setUniformValue(it.key().toUtf8(), float(output));
+        publish(output);
     }
     resetGenerators = false;
     if (vao) QOpenGLContext::currentContext()->extraFunctions()->glBindVertexArray(vao);

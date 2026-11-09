@@ -83,7 +83,7 @@ private:
     bool fixedOutputError = false;
     QString bufferError;
     bool resetHistory = true;
-    QElapsedTimer clock, videoClock;
+    QElapsedTimer clock, videoClock, materialClock;
     std::unique_ptr<LiveInput> liveInput;
     QImage lastVideo, videoFrame;
     bool fxInput = false;
@@ -96,10 +96,12 @@ private:
     bool playing = true, dirty = true, imagesDirty = true;
     struct TimeGenerator {
         QJsonObject parameters;
-        bool animator = false;
+        QString type;
         double elapsed = 0, sampled = 0;
     };
     QHash<QString, TimeGenerator> generators;
+    QStringList generatorOrder;
+    QHash<QString, qint64> eventCounts;
     bool resetGenerators = true;
     struct AudioTexture { bool spectrum; int width; };
     QHash<QString, AudioTexture> audioTextures;

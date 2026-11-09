@@ -983,7 +983,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
                     }
                 }
                 if (!passes && column == 1 && !QStringList{"event", "bool", "long", "float", "point2D",
-                        "point3D", "color", "image", "audio", "audioFFT"}.contains(input)) {
+                        "point3D", "floatRange", "color", "image", "audio", "audioFFT"}.contains(input)) {
                     syncTable();
                     return;
                 }
@@ -1703,7 +1703,7 @@ void MainWindow::savePreviewDefaults() {
         QJsonValue value;
         if (type == "float" || type == "long" || type == "bool") {
             value = QJsonValue::fromVariant(current);
-        } else if (type == "point2D") {
+        } else if (type == "point2D" || type == "floatRange") {
             const auto point = current.value<QVector2D>();
             value = QJsonArray{point.x(), point.y()};
         } else if (type == "point3D") {
@@ -1926,6 +1926,35 @@ void MainWindow::controls(const QJsonObject &header) {
                 connect(spin, &SliderField::valueEdited, this, [=](double v) { preview->setValue(name, int(v)); });
                 parameters->addWidget(spin);
             }
+        } else if (kind == "floatRange") {
+            const auto initial = value.toArray();
+            const double minimum = input.value("MIN").toDouble(0.);
+            const double maximum = qMax(minimum, input.value("MAX").toDouble(1.));
+            auto *lower = new SliderField;
+            auto *upper = new SliderField;
+            for (auto *field : {lower, upper}) {
+                field->setDecimals(4);
+                field->setRange(minimum, maximum);
+                field->setTypedRange(minimum, maximum);
+            }
+            lower->setValue(at(initial, 0).toDouble(minimum));
+            upper->setValue(qMax(lower->value(), at(initial, 1).toDouble(maximum)));
+            lower->setAccessibleName("Range start");
+            upper->setAccessibleName("Range end");
+            parameters->addWidget(lower);
+            parameters->addWidget(upper);
+            const auto updateRange = [=] {
+                preview->setValue(name, QVariant::fromValue(QVector2D(lower->value(), upper->value())));
+            };
+            connect(lower, &SliderField::valueEdited, lower, [=](double v) {
+                if (v > upper->value()) upper->setValue(v);
+                updateRange();
+            });
+            connect(upper, &SliderField::valueEdited, upper, [=](double v) {
+                if (v < lower->value()) lower->setValue(v);
+                updateRange();
+            });
+            updateRange();
         } else if (kind == "point2D" || kind == "point3D") {
             auto *row = new QWidget;
             auto *layout = new QFormLayout(row);
@@ -2158,7 +2187,7 @@ void MainWindow::controls(const QJsonObject &header) {
     }
     const bool hasDefaults = std::any_of(inputs.begin(), inputs.end(), [](const QJsonValue &entry) {
         const auto type = entry.toObject().value("TYPE").toString();
-        return QStringList{"float", "long", "bool", "point2D", "point3D", "color"}.contains(type);
+        return QStringList{"float", "long", "bool", "point2D", "point3D", "floatRange", "color"}.contains(type);
     });
     auto *saveDefaults = new QPushButton("Save as Default");
     saveDefaults->setEnabled(hasDefaults);
@@ -2377,7 +2406,7 @@ void MainWindow::findDuplicates() {
         QHash<QByteArray, QStringList> bySource;
         for (const auto &entry : snapshot) {
             if (cancelled.load()) return;
-            bySource[QCryptographicHash::hash(entry.source, QCryptographicHash::Sha256)].append(entry.path);
+            bySource[QCryptographicHash::hash(shaderComparisonSource(entry), QCryptographicHash::Sha256)].append(entry.path);
         }
         for (const auto &candidates : bySource) {
             if (candidates.size() < 2) continue;
@@ -2410,7 +2439,16 @@ void MainWindow::findDuplicates() {
         if (paths.size() < 2) continue;
         paths.sort(Qt::CaseInsensitive);
         if (paths.removeOne(active)) paths.prepend(active);
-        auto *group = new QTreeWidgetItem(results, {QString("%1 identical shaders").arg(paths.size())});
+        const auto preferred = std::find_if(paths.cbegin(), paths.cend(), [&](const QString &path) {
+            const auto &entry = snapshot[path];
+            return entry.source.contains("isf_FragNormCoord") && shaderComparisonSource(entry) == entry.source;
+        });
+        if (preferred != paths.cend()) {
+            const auto keeper = *preferred;
+            paths.removeOne(keeper);
+            paths.prepend(keeper);
+        }
+        auto *group = new QTreeWidgetItem(results, {QString("%1 matching shaders").arg(paths.size())});
         for (qsizetype i = 0; i < paths.size(); ++i) {
             auto *row = new QTreeWidgetItem(group, {QFileInfo(paths.at(i)).fileName(), paths.at(i)});
             row->setCheckState(0, i == 0 ? Qt::Unchecked : Qt::Checked);

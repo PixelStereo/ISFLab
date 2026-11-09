@@ -1,6 +1,7 @@
 #include "Library.h"
 #include <QCryptographicHash>
 #include <QDir>
+#include <QJsonArray>
 #include <QRegularExpression>
 #include <QFile>
 #include <QFileInfo>
@@ -44,7 +45,7 @@ QString copyEntry(const ShaderEntry &entry, QDir out, QString &created) {
     const auto suffix = "." + info.suffix();
     const auto vertex = ISFScanner::companionVertexPath(entry.path);
     const auto imports = entry.header ? entry.header->value("IMPORTED") : QJsonValue(QJsonValue::Undefined);
-    if (!imports.isUndefined() && !imports.isObject()) return "Invalid IMPORTED image declarations.";
+    if (!imports.isUndefined() && !imports.isObject() && !(imports.isArray() && imports.toArray().isEmpty())) return "Invalid IMPORTED image declarations.";
     const auto imported = imports.toObject();
     if (vertex.isEmpty() && imported.isEmpty()) {
         const auto target = uniquePath(out, stem, suffix);
@@ -145,6 +146,27 @@ ExportReport exportShaders(const QList<ShaderEntry> &entries, const QString &des
     return report;
 }
 
+QByteArray shaderComparisonSource(const ShaderEntry &entry) {
+    if (!entry.header || entry.madMapper || !entry.source.contains("gl_FragCoord") ||
+        !ISFScanner::companionVertexPath(entry.path).isEmpty()) return entry.source;
+
+    // Leave metadata and comments byte-for-byte intact.
+    static const QRegularExpression tokens(
+        R"rx(/\*[\s\S]*?\*/|//[^\r\n]*|(\bgl_FragCoord\s*\.\s*xy\s*/\s*RENDERSIZE\s*\.\s*xy\b))rx");
+    auto source = QString::fromUtf8(entry.source);
+    QList<QPair<qsizetype, qsizetype>> replacements;
+    auto matches = tokens.globalMatch(source);
+    while (matches.hasNext()) {
+        const auto match = matches.next();
+        if (match.capturedStart(1) >= 0)
+            replacements.append({match.capturedStart(1), match.capturedLength(1)});
+    }
+    if (replacements.isEmpty()) return entry.source;
+    for (auto it = replacements.crbegin(); it != replacements.crend(); ++it)
+        source.replace(it->first, it->second, "isf_FragNormCoord");
+    return source.toUtf8();
+}
+
 std::optional<QByteArray> shaderFingerprint(const ShaderEntry &entry) {
     if (!entry.header || entry.madMapper) return {};
     static const QRegularExpression includes(R"rx(^\s*#\s*include\b)rx",
@@ -155,7 +177,7 @@ std::optional<QByteArray> shaderFingerprint(const ShaderEntry &entry) {
         fragment.error() != QFileDevice::NoError) return {};
 
     QCryptographicHash fingerprint(QCryptographicHash::Sha256);
-    fingerprint.addData(QCryptographicHash::hash(entry.source, QCryptographicHash::Sha256));
+    fingerprint.addData(QCryptographicHash::hash(shaderComparisonSource(entry), QCryptographicHash::Sha256));
     const auto vertex = ISFScanner::companionVertexPath(entry.path);
     fingerprint.addData(vertex.isEmpty() ? QByteArrayView("0") : QByteArrayView("1"));
     if (!vertex.isEmpty()) {
@@ -166,7 +188,7 @@ std::optional<QByteArray> shaderFingerprint(const ShaderEntry &entry) {
         fingerprint.addData(QCryptographicHash::hash(code, QCryptographicHash::Sha256));
     }
     const auto imports = entry.header->value("IMPORTED");
-    if (!imports.isUndefined() && !imports.isObject()) return {};
+    if (!imports.isUndefined() && !imports.isObject() && !(imports.isArray() && imports.toArray().isEmpty())) return {};
     const auto folder = QFileInfo(entry.path).dir();
     for (const auto &item : imports.toObject()) {
         const auto relative = item.toObject().value("PATH").toString();
