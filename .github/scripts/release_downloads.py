@@ -8,7 +8,7 @@ import sys
 
 ASSETS = {
     "macOS ARM64": "ISFLab-macOS-arm64.zip",
-    "Windows x64": "ISFLab-Windows-x64.zip",
+    "Windows x64": "ISFLab-Windows-x64-Setup.exe",
     "Linux x64": "ISFLab-Linux-x64.tar.gz",
 }
 START = "<!-- release-downloads:start -->"

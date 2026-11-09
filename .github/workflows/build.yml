@@ -108,23 +108,31 @@ jobs:
           codesign --force --sign - "$app"
           codesign --verify --deep --strict "$app"
           ditto -c -k --keepParent "$app" ISFLab-macOS-arm64.zip
-      - name: Include the Microsoft Visual C++ runtime installer
+      - name: Bundle Windows runtime DLLs alongside ISFLab
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $runtime = "package/vc_redist.x64.exe"
-          Invoke-WebRequest https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile $runtime
-          $signature = Get-AuthenticodeSignature $runtime
-          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
-            throw "Invalid Microsoft Visual C++ Redistributable signature"
-          }
+          $bin = "package/bin"
+          $crt = Get-ChildItem (Join-Path $env:VCToolsRedistDir "x64") -Directory -Filter "Microsoft.VC*.CRT" |
+            Select-Object -First 1
+          if (!$crt) { throw "Microsoft Visual C++ runtime DLLs are missing from the build environment" }
+          Copy-Item (Join-Path $crt.FullName "*.dll") -Destination $bin -Force -ErrorAction Stop
           $qtPlatform = Get-ChildItem package -Recurse -File -Filter qwindows.dll | Select-Object -First 1
-          if (!(Test-Path package/bin/ISFLab.exe) -or !$qtPlatform) {
-            throw "The Windows executable or Qt platform plugin is missing"
+          foreach ($file in @("ISFLab.exe", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")) {
+            if (!(Test-Path (Join-Path $bin $file))) { throw "Missing portable Windows dependency: $file" }
           }
-      - name: Archive Windows executable and Qt libraries
+          if (!$qtPlatform) { throw "The Qt Windows platform plugin is missing" }
+      - name: Build Windows installer
         if: runner.os == 'Windows'
-        run: Compress-Archive -Path package/* -DestinationPath ISFLab-Windows-x64.zip
+        shell: pwsh
+        run: |
+          choco install nsis --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "NSIS installation failed" }
+          $compiler = Join-Path ${env:ProgramFiles(x86)} "NSIS/makensis.exe"
+          & $compiler packaging/windows.nsi
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path ISFLab-Windows-x64-Setup.exe)) {
+            throw "Windows installer build failed"
+          }
       - name: Archive Linux executable
         if: runner.os == 'Linux'
         run: tar -C package -czf ISFLab-Linux-x64.tar.gz .
@@ -134,6 +142,7 @@ jobs:
           path: |
             ISFLab-*.zip
             ISFLab-*.tar.gz
+            ISFLab-Windows-x64-Setup.exe
           if-no-files-found: error
 
   release:
@@ -154,7 +163,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          assets=(release/ISFLab-macOS-arm64.zip release/ISFLab-Windows-x64.zip release/ISFLab-Linux-x64.tar.gz)
+          assets=(release/ISFLab-macOS-arm64.zip release/ISFLab-Windows-x64-Setup.exe release/ISFLab-Linux-x64.tar.gz)
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
             gh release edit "$RELEASE_TAG" --draft=false

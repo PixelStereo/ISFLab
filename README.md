@@ -18,6 +18,8 @@ Latest build **[v0.1.2](https://github.com/PixelStereo/ISFLab/releases/tag/v0.1.
 [macOS ARM64](https://github.com/PixelStereo/ISFLab/releases/download/v0.1.2/ISFLab-macOS-arm64.zip) · [Windows x64](https://github.com/PixelStereo/ISFLab/releases/download/v0.1.2/ISFLab-Windows-x64.zip) · [Linux x64](https://github.com/PixelStereo/ISFLab/releases/download/v0.1.2/ISFLab-Linux-x64.tar.gz)
 <!-- release-downloads:end -->
 
+Starting with the next release, Windows x64 is distributed as a single installer that bundles the required runtime libraries and adds ISFLab to the Start menu.
+
 ## Quick start
 
 Clone with `git clone --recurse-submodules https://github.com/PixelStereo/ISFLab.git`.
