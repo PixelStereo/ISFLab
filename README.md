@@ -13,7 +13,9 @@ A desktop app by **Pixel Stereo** for macOS, Windows and Linux.
 ## Download
 
 <!-- release-downloads:start -->
-Downloads appear here after the first complete release.
+Latest build **[v0.1.3](https://github.com/PixelStereo/ISFLab/releases/tag/v0.1.3)**
+
+[macOS ARM64](https://github.com/PixelStereo/ISFLab/releases/download/v0.1.3/ISFLab-macOS-arm64.zip) · [Windows x64](https://github.com/PixelStereo/ISFLab/releases/download/v0.1.3/ISFLab-Windows-x64-Setup.exe) · [Linux x64](https://github.com/PixelStereo/ISFLab/releases/download/v0.1.3/ISFLab-Linux-x64.tar.gz)
 <!-- release-downloads:end -->
 
 Starting with the next release, Windows x64 is distributed as a single installer that bundles the required runtime libraries and adds ISFLab to the Start menu.
