@@ -4,6 +4,8 @@
 #include <QHash>
 #include <QImage>
 #include <QJsonObject>
+#include <QJsonArray>
+#include <QSet>
 #include <QOpenGLFunctions>
 #include <QObject>
 #include <QVariant>
@@ -89,9 +91,12 @@ private:
     bool playing = true, dirty = true, imagesDirty = true;
     struct TimeGenerator {
         QJsonObject parameters;
-        double elapsed = 0;
+        bool animator = false;
+        double elapsed = 0, sampled = 0;
     };
     QHash<QString, TimeGenerator> generators;
     bool resetGenerators = true;
-    GLuint vbo = 0;
+    QHash<QString, QJsonArray> materialChoices;
+    QSet<QString> materialDefines;
+    GLuint vbo = 0, vao = 0;
 };

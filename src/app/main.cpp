@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "AppStyle.h"
+#include "ShaderPreview.h"
 #include <QApplication>
 #include <QLocale>
 #include <QIcon>
@@ -11,6 +12,7 @@ void applyMacApplicationIcon();
 int main(int argc, char *argv[]) {
     QLocale::setDefault(QLocale(QLocale::English));
     QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+    ShaderPreview::configureDefaultFormat();
     QApplication app(argc, argv);
     app.setApplicationName("ISFLab");
     app.setApplicationVersion(ISFLAB_VERSION);

@@ -688,7 +688,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     viewerLayout->addWidget(previewStatus);
     connect(preview, &ShaderPreview::status, this, [this](const QString &status) {
         previewStatus->setText(status == "Preview compiled" ? status : "Preview error · See Diagnostics");
-        if (active.isEmpty() || editor->document()->isModified() || !entries.value(active).header) return;
+        if (active.isEmpty() || editor->document()->isModified() || vertexEditor->document()->isModified()) return;
         if (status == "Preview compiled") {
             if (previewErrors.remove(active)) refresh();
         } else if (previewErrors.value(active) != status) {
@@ -718,22 +718,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     paramsDock->setWidget(scroll);
     splitDockWidget(libraryDock, paramsDock, Qt::Horizontal);
 
-    auto *codePanel = new QWidget;
-    auto *codeLayout = new QVBoxLayout(codePanel);
+    auto *codePanel = sourceTabs = new QTabWidget;
     editor = new SourceEditor;
     new SourceHighlighter(editor->document());
     editor->setReadOnly(true);
     editor->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     editor->setPlaceholderText("Import a shader to edit its GLSL source.");
-    compilePreviewButton = new QPushButton("Compile preview");
-    compilePreviewButton->setObjectName("primary");
-    compilePreviewButton->setEnabled(false);
-    connect(compilePreviewButton, &QPushButton::clicked, this, &MainWindow::applyPreview);
-    connect(editor, &QPlainTextEdit::textChanged, this, [this] {
-        compilePreviewButton->setEnabled(!active.isEmpty() && editor->toPlainText() != previewedSource);
-    });
-    codeLayout->addWidget(compilePreviewButton, 0, Qt::AlignLeft);
-    codeLayout->addWidget(editor);
+    vertexEditor = new SourceEditor;
+    new SourceHighlighter(vertexEditor->document());
+    vertexEditor->setFont(editor->font());
+    sourceTabs->addTab(editor, "Fragment (.fs)");
+    sourceTabs->addTab(vertexEditor, "Vertex (.vs)");
+    sourceTabs->setTabVisible(1, false);
+    auto *editorDock = new QDockWidget("ISF Editor", this);
     auto *inspector = new QTabWidget;
     auto *metadata = new QWidget;
     auto *metadataLayout = new QFormLayout(metadata);
@@ -961,6 +958,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     struct CompilerDiagnostic {
         QString stage, file, log;
+        QString shader;
         int line = 0;
     };
     const auto compiler = std::make_shared<CompilerDiagnostic>();
@@ -1019,23 +1017,30 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         const bool invalid = !active.isEmpty() && !ISFScanner::header(bytes, &error) &&
                              !(material && ISFScanner::materialHeader(bytes));
         const auto fixes = invalid ? ISFScanner::trailingCommaFix(bytes) : QList<qsizetype>{};
-        const bool showCompiler = !invalid && !active.isEmpty() && !compiler->stage.isEmpty();
+        const bool showCompiler = !invalid && !active.isEmpty() && compiler->shader == active && !compiler->stage.isEmpty();
         inspector->setTabText(diagnosticTab, invalid || showCompiler ? "Diagnostics (1)" : "Diagnostics");
         const bool warning = showCompiler && compiler->stage == "Material warning";
         inspector->tabBar()->setTabTextColor(diagnosticTab, warning ? QColor("#e6bd8d") :
                                              invalid || showCompiler ? QColor("#f17979") : QColor{});
+        const bool hasError = (invalid && (material || ISFScanner::headerStart(bytes) >= 0)) ||
+                              (showCompiler && !warning);
+        if (hasError) {
+            editorDock->show();
+            inspector->setCurrentIndex(diagnosticTab);
+        }
         compilerLog->setVisible(showCompiler);
         const auto glslFix = showCompiler ? suggestedFix() : std::optional<GlslFix>{};
         fixGlsl->setVisible(glslFix.has_value());
         jumpToError->setEnabled(invalid || (showCompiler && compiler->line > 0 &&
-                                           editor->toPlainText() == previewedSource));
+                                           editor->toPlainText() == previewedSource &&
+                                           !(compiler->file == vertexPath && vertexEditor->document()->isModified())));
         fixCommas->setEnabled(!fixes.isEmpty());
         if (showCompiler) {
             QString heading = compiler->stage;
             if (!compiler->file.isEmpty()) heading += " · " + QFileInfo(compiler->file).fileName();
             if (compiler->line > 0) heading += QString(" · line %1").arg(compiler->line);
             if (editor->toPlainText() != previewedSource)
-                heading += "\nCompile the current edits to refresh this diagnostic.";
+                heading += "\nSave the current edits to refresh this diagnostic.";
             const auto log = compiler->log.toLower();
             if (log.contains("undeclared") || log.contains("not declared"))
                 heading += "\nCheck the identifier spelling, its declaration, and its scope.";
@@ -1063,9 +1068,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         diagnosticMessage->setText(QString("Line %1, column %2\n%3").arg(line).arg(column).arg(detail));
     };
     connect(editor, &QPlainTextEdit::textChanged, diagnostics, updateDiagnostics);
+    connect(vertexEditor->document(), &QTextDocument::modificationChanged, diagnostics, updateDiagnostics);
     connect(preview, &ShaderPreview::glslDiagnostic, diagnostics,
             [=](const QString &stage, const QString &file, const QString &log, int line) {
-        *compiler = {stage, file, log, line};
+        *compiler = {stage, file, log, active, line};
         updateDiagnostics();
     });
     connect(preview, &ShaderPreview::status, diagnostics, [=](const QString &status) {
@@ -1073,7 +1079,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
             if (compiler->stage != "Material warning") *compiler = {};
         } else if (compiler->stage.isEmpty() || compiler->stage == "Preview error" ||
                    compiler->stage == "Material warning") {
-            *compiler = {"Preview error", active, status, 0};
+            *compiler = {"Preview error", active, status, active, 0};
         }
         updateDiagnostics();
     });
@@ -1082,9 +1088,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         ISFScanner::HeaderError error;
         if (ISFScanner::header(bytes, &error) ||
             (ISFScanner::isMadMapperMaterial(bytes) && ISFScanner::materialHeader(bytes))) {
-            if (compiler->line <= 0 || editor->toPlainText() != previewedSource) return;
+            if (compiler->shader != active || compiler->line <= 0 || editor->toPlainText() != previewedSource) return;
             if (compiler->file == active || compiler->file.isEmpty()) {
+                sourceTabs->setCurrentIndex(0);
                 goToLine(editor, compiler->line);
+            } else if (compiler->file == vertexPath && !vertexEditor->document()->isModified()) {
+                sourceTabs->setCurrentIndex(1);
+                goToLine(vertexEditor, compiler->line);
             } else {
                 const auto vertex = readShader(compiler->file);
                 if (!vertex) {
@@ -1106,6 +1116,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
             return;
         }
         const auto fixes = ISFScanner::trailingCommaFix(bytes);
+        sourceTabs->setCurrentIndex(0);
         QTextCursor cursor(editor->document());
         cursor.setPosition(QString::fromUtf8(bytes.left(fixes.isEmpty() ? error.byteOffset : fixes.first())).size());
         editor->setTextCursor(cursor);
@@ -1118,8 +1129,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         QTextCursor cursor(editor->document());
         cursor.setPosition(fix->position);
         cursor.setPosition(fix->position + fix->length, QTextCursor::KeepAnchor);
+        sourceTabs->setCurrentIndex(0);
         cursor.insertText(fix->to);
-        applyPreview();
         statusBar()->showMessage("Suggested fix applied in the editor. Save to update the file.", 5000);
     });
     connect(fixCommas, &QPushButton::clicked, diagnostics, [this] {
@@ -1143,7 +1154,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     editorSplit->addWidget(inspector);
     editorSplit->setStretchFactor(0, 2);
     editorSplit->setStretchFactor(1, 1);
-    auto *editorDock = new QDockWidget("ISF Editor", this);
     editorDock->setWidget(editorSplit);
     addDockWidget(Qt::BottomDockWidgetArea, editorDock);
 
@@ -1208,9 +1218,20 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
             entryGroups.insert(it.key(), it.value().toString());
         }
     }
+    const auto disabledTypes = session.value("mediaBin/disabledTypes").toStringList();
+    for (auto *tab : typeTabs) {
+        const QSignalBlocker blocker(tab);
+        tab->setChecked(!disabledTypes.contains(tab->objectName()));
+    }
+    const auto disabledCategories = session.value("mediaBin/disabledCategories").toStringList();
+    uncheckedCategories = QSet<QString>(disabledCategories.cbegin(), disabledCategories.cend());
+    {
+        const QSignalBlocker blocker(search);
+        search->setText(session.value("mediaBin/nameFilter").toString());
+    }
     refresh();
     const auto selectedPath = session.value("mediaBin/active").toString();
-    if (auto *row = rows.value(selectedPath)) tree->setCurrentItem(row);
+    if (auto *row = rows.value(selectedPath); row && !row->isHidden()) tree->setCurrentItem(row);
     if (!restoreGeometry(QSettings().value("mainWindow/geometry").toByteArray())) {
         if (const auto *display = screen()) {
             const auto available = display->availableGeometry();
@@ -1249,6 +1270,12 @@ void MainWindow::closeEvent(QCloseEvent *event) {
     settings.setValue("mediaBin/entries", savedEntries);
     settings.setValue("mediaBin/lastFolder", folder);
     settings.setValue("mediaBin/active", active);
+    QStringList disabledTypes;
+    for (const auto *tab : typeTabs)
+        if (!tab->isChecked()) disabledTypes << tab->objectName();
+    settings.setValue("mediaBin/disabledTypes", disabledTypes);
+    settings.setValue("mediaBin/disabledCategories", QStringList(uncheckedCategories.values()));
+    settings.setValue("mediaBin/nameFilter", search->text());
     event->accept();
 }
 
@@ -1460,6 +1487,15 @@ void MainWindow::select(const QString &path) {
         item->setData(0, AppStyle::ActiveRole, true);
         item->setData(1, AppStyle::ActiveRole, true);
     }
+    vertexPath = ISFScanner::companionVertexPath(path);
+    const auto vertex = vertexPath.isEmpty() ? std::optional<ShaderEntry>{} : readShader(vertexPath);
+    vertexEditor->setPlaceholderText(vertexPath.isEmpty() ? QString{} : "The vertex shader could not be read.");
+    vertexBaseline = vertex ? vertex->source : QByteArray{};
+    vertexEditor->setPlainText(QString::fromUtf8(vertexBaseline));
+    vertexEditor->document()->setModified(false);
+    vertexEditor->setReadOnly(!vertex);
+    sourceTabs->setTabVisible(1, !vertexPath.isEmpty());
+    sourceTabs->setCurrentIndex(0);
     editor->setReadOnly(false);
     editor->setPlainText(QString::fromUtf8(entries.value(active).source));
     editor->document()->setModified(false);
@@ -1467,44 +1503,59 @@ void MainWindow::select(const QString &path) {
 }
 
 bool MainWindow::resolveChanges() {
-    if (!editor->document()->isModified()) return true;
+    if (!editor->document()->isModified() && !vertexEditor->document()->isModified()) return true;
     QMessageBox dialog(QMessageBox::Warning, "Unsaved shader", "Save changes to " + QFileInfo(active).fileName() + "?",
                        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, this);
     dialog.button(QMessageBox::Discard)->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_D));
     const auto choice = dialog.exec();
     if (choice == QMessageBox::Save) return save();
     if (choice != QMessageBox::Discard) return false;
-    editor->setPlainText(QString::fromUtf8(entries.value(active).source));
-    editor->document()->setModified(false);
-    applyPreview();
+    select(active);
     return true;
 }
 
 bool MainWindow::save() {
     if (active.isEmpty()) return true;
-    if (!editor->document()->isModified()) return true;
+    const bool saveFragment = editor->document()->isModified();
+    const bool saveVertex = vertexEditor->document()->isModified();
     auto &entry = entries[active];
-    const auto disk = readShader(active);
-    if (!disk || disk->source != entry.source) {
-        QMessageBox::warning(this, "Save shader", "The file changed outside ISFLab. Your edits are still in the editor.");
-        return false;
-    }
     const auto source = editor->toPlainText().toUtf8();
     const auto header = ISFScanner::header(source);
-    if (!header) {
-        QMessageBox::warning(this, "Save shader", "The source must begin with a valid ISF JSON header.");
+    if (saveFragment && !header &&
+        !(ISFScanner::isMadMapperMaterial(source) && ISFScanner::materialHeader(source))) {
+        QMessageBox::warning(this, "Save shader", "The fragment source must begin with a valid shader header.");
         return false;
     }
-    QSaveFile file(active);
-    if (!file.open(QIODevice::WriteOnly) || file.write(source) != source.size() || !file.commit()) {
-        QMessageBox::warning(this, "Save shader", file.errorString());
+    const auto unchanged = [&](const QString &path, const QByteArray &baseline) {
+        const auto disk = readShader(path);
+        if (disk && disk->source == baseline) return true;
+        QMessageBox::warning(this, "Save shader",
+            QFileInfo(path).fileName() + " changed outside ISFLab or could not be read.");
         return false;
+    };
+    if ((saveFragment && !unchanged(active, entry.source)) ||
+        (saveVertex && !unchanged(vertexPath, vertexBaseline))) return false;
+    const auto write = [&](const QString &path, const QByteArray &bytes) {
+        QSaveFile file(path);
+        if (file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size() && file.commit())
+            return true;
+        QMessageBox::warning(this, "Save shader", QFileInfo(path).fileName() + " · " + file.errorString());
+        return false;
+    };
+    if (saveFragment) {
+        if (!write(active, source)) return false;
+        entry.source = source;
+        entry.header = header;
+        entry.madMapper = ISFScanner::isMadMapperMaterial(source);
+        editor->document()->setModified(false);
     }
-    entry.source = source;
-    entry.header = header;
-    entry.madMapper = ISFScanner::isMadMapperMaterial(source);
-    previewErrors.remove(active);
-    editor->document()->setModified(false);
+    if (saveVertex) {
+        const auto bytes = vertexEditor->toPlainText().toUtf8();
+        if (!write(vertexPath, bytes)) return false;
+        vertexBaseline = bytes;
+        vertexEditor->document()->setModified(false);
+    }
+    if (saveFragment || saveVertex) previewErrors.remove(active);
     applyPreview();
     refresh();
     return true;
@@ -1530,7 +1581,7 @@ void MainWindow::savePreviewDefaults() {
     if (active.isEmpty()) return;
     const auto source = editor->toPlainText();
     if (source != previewedSource) {
-        statusBar()->showMessage("Compile the edited source before saving preview defaults.", 5000);
+        statusBar()->showMessage("Save the edited source before saving preview defaults.", 5000);
         return;
     }
     auto header = ISFScanner::header(source.toUtf8());
@@ -1572,7 +1623,6 @@ void MainWindow::savePreviewDefaults() {
 void MainWindow::applyPreview() {
     if (active.isEmpty()) return;
     previewedSource = editor->toPlainText();
-    compilePreviewButton->setEnabled(false);
     const auto source = previewedSource.toUtf8();
     const bool material = ISFScanner::isMadMapperMaterial(source);
     const auto header = material ? ISFScanner::materialHeader(source) : ISFScanner::header(source);
@@ -2016,7 +2066,12 @@ void MainWindow::exportFiltered(bool zip) {
 void MainWindow::clearSelection() {
     active.clear();
     previewedSource.clear();
-    compilePreviewButton->setEnabled(false);
+    vertexPath.clear();
+    vertexBaseline.clear();
+    vertexEditor->clear();
+    vertexEditor->document()->setModified(false);
+    sourceTabs->setCurrentIndex(0);
+    sourceTabs->setTabVisible(1, false);
     editor->clear();
     editor->document()->setModified(false);
     editor->setReadOnly(true);
@@ -2273,7 +2328,7 @@ void MainWindow::repairErrors(const QStringList &paths) {
         const auto entry = entries.constFind(path);
         if (entry == entries.cend() || binType(*entry) != ISFType::Unknown) continue;
         ++errorCount;
-        if (path == active && editor->document()->isModified()) continue;
+        if (path == active && (editor->document()->isModified() || vertexEditor->document()->isModified())) continue;
         const auto commas = ISFScanner::trailingCommaFix(entry->source);
         if (!commas.isEmpty()) repairs.insert(path, commas);
     }

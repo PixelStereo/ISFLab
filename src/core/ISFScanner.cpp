@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <QDir>
 #include <QFileInfo>
 #include "ISFScanner.h"
@@ -116,8 +117,19 @@ std::optional<QJsonObject> ISFScanner::materialHeader(const QByteArray &source) 
         auto inputs = metadata->value("INPUTS").toArray();
         for (qsizetype i = 0; i < inputs.size(); ++i) {
             auto input = inputs.at(i).toObject();
-            if (input.value("TYPE") != QJsonValue("int")) continue;
-            input.insert("TYPE", "long");
+            if (input.value("TYPE") == QJsonValue("int")) input.insert("TYPE", "long");
+            const auto choices = input.value("VALUES").toArray();
+            if (input.value("TYPE") == QJsonValue("long") && !choices.isEmpty() &&
+                std::all_of(choices.begin(), choices.end(), [](const auto &choice) { return choice.isString(); })) {
+                QJsonArray indices;
+                for (qsizetype index = 0; index < choices.size(); ++index) indices.append(int(index));
+                int initial = 0;
+                for (qsizetype index = 0; index < choices.size(); ++index)
+                    if (choices.at(index) == input.value("DEFAULT")) initial = int(index);
+                input.insert("VALUES", indices);
+                input.insert("LABELS", choices);
+                input.insert("DEFAULT", initial);
+            }
             inputs.replace(i, input);
         }
         metadata->insert("INPUTS", inputs);

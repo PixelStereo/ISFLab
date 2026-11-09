@@ -26,6 +26,14 @@ int main() {
     const QByteArray material = "/*{ invalid material metadata }*/\nvec4 materialColorForPixel(vec2 uv) { return vec4(uv, 0., 1.); }";
     require(ShaderEntry{"material.fs", material, ISFScanner::header(material)}.type() == ISFType::MadMapper,
             "MadMapper entry point should take precedence over the ISF header");
+    const auto materialOptions = ISFScanner::materialHeader(R"(/*{"INPUTS":[
+        {"TYPE":"long","NAME":"shape","VALUES":["In","Out","Smooth"],"DEFAULT":"Smooth"},
+    ]}*/)");
+    require(materialOptions.has_value(), "Material options header should parse");
+    const auto shape = materialOptions->value("INPUTS").toArray().first().toObject();
+    require(shape.value("DEFAULT").toInt(-1) == 2 &&
+            shape.value("LABELS").toArray().at(2).toString() == "Smooth",
+            "Material string choices should preserve the selected shape");
     require(!ISFScanner::isMadMapperMaterial("// vec4 materialColorForPixel(vec2 uv) {}\nvoid main() {}"),
             "Commented examples should not classify a shader as a Material");
 

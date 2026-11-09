@@ -158,7 +158,7 @@ public:
         if (i.column() == 0) {
             const auto symbol = icon(group ? Icon::Folder : Icon::File, group ? QColor("#8394b3") : QColor("#a5a5ae"));
             symbol.paint(p, QRect(rect.left() + 4, rect.center().y() - 8, 16, 16));
-            p->setPen(group ? QColor("#c9c9d1") : QColor("#eeeeef"));
+            p->setPen(group ? QColor("#c9c9d1") : kind == ISFType::Unknown ? QColor("#ff9292") : QColor("#eeeeef"));
             const auto label = rect.adjusted(25, 0, -3, 0);
             const auto origin = i.data(OriginRole).toString();
             const auto nameRect = origin.isEmpty() ? label : label.adjusted(0, 0, 0, -15);

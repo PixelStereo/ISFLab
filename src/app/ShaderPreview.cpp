@@ -2,6 +2,16 @@
 #include <QMouseEvent>
 #include <QOpenGLContext>
 #include <QTimer>
+#include <QSurfaceFormat>
+
+void ShaderPreview::configureDefaultFormat() {
+#ifdef Q_OS_MACOS
+    auto format = QSurfaceFormat::defaultFormat();
+    format.setVersion(3, 2);
+    format.setProfile(QSurfaceFormat::CoreProfile);
+    QSurfaceFormat::setDefaultFormat(format);
+#endif
+}
 
 ShaderPreview::ShaderPreview(QWidget *parent) : QOpenGLWidget(parent) {
     connect(&engine, &ShaderEngine::status, this, &ShaderPreview::status);

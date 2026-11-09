@@ -86,6 +86,10 @@ void ShaderEngine::release() {
     renderPasses.clear();
     fixedOutput.reset();
     program.reset();
+    if (vao) {
+        QOpenGLContext::currentContext()->extraFunctions()->glDeleteVertexArrays(1, &vao);
+        vao = 0;
+    }
     glDeleteBuffers(1, &vbo);
     vbo = 0;
 }
@@ -101,12 +105,21 @@ void ShaderEngine::load(const QByteArray &code, const QJsonObject &metadata, con
     header = metadata;
     path = file;
     values.clear();
+    materialChoices.clear();
+    materialDefines.clear();
+    const bool material = ISFScanner::isMadMapperMaterial(code);
     for (const auto &entry : header.value("INPUTS").toArray()) {
         const auto input = entry.toObject();
         const auto name = input.value("NAME").toString();
         if (name.isEmpty()) continue;
         const auto type = input.value("TYPE").toString();
         const auto value = input.value("DEFAULT");
+        if (material) {
+            if (type == "long") materialChoices.insert(name, input.value("LABELS").toArray());
+            if ((type == "long" || type == "bool") &&
+                input.value("FLAGS").toString().split(',').contains("generate_as_define"))
+                materialDefines.insert(name);
+        }
         if (type == "float") values.insert(name, value.toDouble());
         else if (type == "long") {
             const auto choices = input.value("VALUES").toArray();
@@ -171,7 +184,10 @@ void ShaderEngine::seek(double value) {
     for (auto &entry : shaderInputs) entry.second->engine.seek(value);
     emit timeChanged(time);
 }
-void ShaderEngine::setValue(const QString &name, const QVariant &value) { values[name] = value; }
+void ShaderEngine::setValue(const QString &name, const QVariant &value) {
+    if (materialDefines.contains(name) && values.value(name) != value) dirty = true;
+    values[name] = value;
+}
 QVariant ShaderEngine::value(const QString &name) const {
     if (transitionAnimated && name == "progress") {
         const double elapsed = time + transitionOffset;
@@ -496,6 +512,8 @@ void ShaderEngine::updateVideoInput(GLuint framebuffer) {
 void ShaderEngine::initialize() {
     initializeOpenGLFunctions();
     const GLfloat vertices[] = {-1,-1, 3,-1, -1,3};
+    if (QOpenGLContext::currentContext()->format().profile() == QSurfaceFormat::CoreProfile)
+        QOpenGLContext::currentContext()->extraFunctions()->glGenVertexArrays(1, &vao);
     glGenBuffers(1, &vbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
@@ -524,8 +542,14 @@ void ShaderEngine::compile() {
         emit status("Preview supports up to 16 passes.");
         return;
     }
-    const QByteArray version = QOpenGLContext::currentContext()->isOpenGLES() ? "#version 100\nprecision highp float;\n" : "#version 120\n";
-    QByteArray frag = version + R"(
+    const auto *context = QOpenGLContext::currentContext();
+    const auto format = context->format();
+    const bool modern = !context->isOpenGLES() &&
+        (format.profile() == QSurfaceFormat::CoreProfile ||
+         (material && format.version() >= qMakePair(3, 2)));
+    const QByteArray version = modern ? "#version 150\n" :
+        context->isOpenGLES() ? "#version 100\nprecision highp float;\n" : "#version 120\n";
+    QByteArray frag = R"(
 uniform vec2 RENDERSIZE;
 uniform float TIME, TIMEDELTA;
 uniform vec4 DATE;
@@ -548,19 +572,33 @@ varying vec2 isf_FragNormCoord;
     };
     for (const auto &entry : header.value("INPUTS").toArray()) {
         const auto obj = entry.toObject();
-        add(obj.value("NAME").toString(), obj.value("TYPE").toString());
+        const auto name = obj.value("NAME").toString();
+        const auto type = obj.value("TYPE").toString();
+        add(name, type);
+        if (materialDefines.contains(name)) {
+            const auto selected = values.value(name);
+            const auto choices = materialChoices.value(name);
+            const auto options = obj.value("VALUES").toArray();
+            const auto option = std::find(options.begin(), options.end(), QJsonValue(selected.toInt()));
+            const auto index = option - options.begin();
+            QString label = type == "bool" ? (selected.toBool() ? "true" : "false")
+                : option != options.end() && index < choices.size() ? choices.at(index).toString() : selected.toString();
+            label.replace(QRegularExpression("[^a-zA-Z_0-9]"), "_");
+            const auto define = name + "_IS_" + label;
+            if (identifier.match(define).hasMatch()) frag += "#define " + define.toUtf8() + " 1\n";
+        }
     }
     if (material) {
         for (const auto &entry : header.value("GENERATORS").toArray()) {
             const auto generator = entry.toObject();
             const auto name = generator.value("NAME").toString();
             const auto type = generator.value("TYPE").toString();
-            if (type != "time_base" || !identifier.match(name).hasMatch() || types.contains(name)) {
+            if ((type != "time_base" && type != "animator") || !identifier.match(name).hasMatch() || types.contains(name)) {
                 emit status(QString("Unsupported Material generator: %1 (%2)").arg(name, type));
                 return;
             }
             add(name, "float");
-            generators.insert(name, {generator.value("PARAMS").toObject(), 0});
+            generators.insert(name, {generator.value("PARAMS").toObject(), type == "animator"});
         }
     }
     QStringList missingImages;
@@ -632,7 +670,11 @@ varying vec2 isf_FragNormCoord;
     const auto vertexPath = ISFScanner::companionVertexPath(path);
     QStringList includeFiles{path};
     QStringList vertexIncludes{vertexPath};
-    QByteArray vert = frag + R"(
+    const QByteArray textureCompatibility = modern ? "#define texture2D texture\n#define textureCube texture\n" :
+        material ? "#define texture texture2D\n" : "";
+    QByteArray vert = version + textureCompatibility;
+    if (modern) vert += "#define varying out\n#define attribute in\n";
+    vert += frag + R"(
 attribute vec2 position;
 void isf_vertShaderInit() {
     gl_Position = vec4(position, 0., 1.);
@@ -667,8 +709,7 @@ void isf_vertShaderInit() {
             static const QRegularExpression output(
                 R"rx(^([ \t]*)out(?=[ \t]+\w+[ \t]+\w+[ \t]*(?:\[|;)))rx",
                 QRegularExpression::MultilineOption);
-            vertexBody.replace(output, "\\1varying");
-            vert += "#define texture texture2D\n";
+            if (!modern) vertexBody.replace(output, "\\1varying");
         }
         vert += "\n#line 1\n" + specializeImageCalls(vertexBody);
         if (material)
@@ -684,17 +725,21 @@ void isf_vertShaderInit() {
             emit status(error);
             return;
         }
-        // The legacy desktop preview context exposes GLSL 1.20. The bundled
-        // Material helpers use the newer spelling for 2D texture lookups.
-        frag += "#define texture texture2D\n";
         static const QRegularExpression input(
             R"rx(^([ \t]*)in(?=[ \t]+\w+[ \t]+\w+[ \t]*(?:\[|;)))rx",
             QRegularExpression::MultilineOption);
         auto materialBody = QString::fromUtf8(fragmentBody);
-        materialBody.replace(input, "\\1varying");
+        if (!modern) materialBody.replace(input, "\\1varying");
         fragmentBody = materialBody.toUtf8();
         fragmentBody += "\nvoid main() { gl_FragColor = materialColorForPixel(isf_FragNormCoord); }\n";
     }
+    QByteArray fragmentPrelude = version + textureCompatibility;
+    if (modern) {
+        fragmentPrelude += "#define varying in\n"
+                           "out vec4 _isflab_fragColor;\n"
+                           "#define gl_FragColor _isflab_fragColor\n";
+    }
+    frag.prepend(fragmentPrelude);
     frag += "\n#line " + QByteArray::number(fragmentStartLine) + "\n"
         + specializeImageCalls(QString::fromUtf8(fragmentBody));
     auto candidate = std::make_unique<QOpenGLShaderProgram>();
@@ -904,11 +949,44 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
         const double curve = parameter("speed_curve", 1.0).toDouble();
         if (speed != 0 && curve > 0) speed = std::copysign(std::pow(std::abs(speed), curve), speed);
         if (parameter("reverse", false).toBool()) speed = -speed;
-        if (parameter("link_speed_to_global_bpm", false).toBool()) speed *= 2.0; // 120 BPM
+        const bool bpmSync = parameter("bpm_sync", false).toBool();
+        constexpr double beatsPerSecond = 2.0; // Preview clock at 120 BPM.
+        if (bpmSync && speed != 0)
+            speed = std::copysign(std::exp2(std::round(std::log2(std::abs(speed)))), speed) * beatsPerSecond;
         it->elapsed = resetGenerators ? time * speed : it->elapsed + delta * speed;
-        program->setUniformValue(it.key().toUtf8(), float(it->elapsed));
+        const double strob = parameter("strob", 0.0).toDouble() / (bpmSync ? beatsPerSecond : 1.0);
+        if (strob <= 0) it->sampled = it->elapsed;
+        else if (resetGenerators || std::floor(time / strob) != std::floor((time - delta) / strob))
+            it->sampled = it->elapsed - std::fmod(time, strob) * speed;
+        double output = it->sampled;
+        if (it->animator) {
+            const auto shapeRef = parameters.value("shape").toString("Smooth");
+            const auto choices = materialChoices.value(shapeRef);
+            const int index = values.value(shapeRef, -1).toInt();
+            const auto shape = index >= 0 && index < choices.size() ? choices.at(index).toString() : shapeRef;
+            const double cycle = std::floor(output);
+            const double phase = output - cycle;
+            if (shape == "In") output = phase;
+            else if (shape == "Out") output = 1.0 - phase;
+            else if (shape == "Linear") output = 1.0 - std::abs(2.0 * phase - 1.0);
+            else if (shape == "Cut") output = phase >= 0.5 ? 1.0 : 0.0;
+            else if (shape == "Random" || shape == "Noise") {
+                const auto random = [](double cell) {
+                    const double hash = std::sin(cell * 127.1 + 311.7) * 43758.5453;
+                    return hash - std::floor(hash);
+                };
+                const double blend = phase * phase * (3.0 - 2.0 * phase);
+                output = random(cycle);
+                if (shape == "Noise") output += blend * (random(cycle + 1.0) - output);
+            } else {
+                constexpr double tau = 6.283185307179586;
+                output = 0.5 - 0.5 * std::cos(tau * phase);
+            }
+        }
+        program->setUniformValue(it.key().toUtf8(), float(output));
     }
     resetGenerators = false;
+    if (vao) QOpenGLContext::currentContext()->extraFunctions()->glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     const int position = program->attributeLocation("position");
     program->enableAttributeArray(position);
@@ -929,6 +1007,7 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
             if (!pass.read->isValid() || !pass.write->isValid()) {
                 glBindFramebuffer(GL_FRAMEBUFFER, screen);
                 program->disableAttributeArray(position);
+    if (vao) QOpenGLContext::currentContext()->extraFunctions()->glBindVertexArray(0);
                 program->release();
                 for (auto &buffer : renderPasses) {
                     buffer.read.reset();
@@ -994,6 +1073,7 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
             if (pass.persistent && pass.write) std::swap(pass.read, pass.write);
     glActiveTexture(GL_TEXTURE0);
     program->disableAttributeArray(position);
+    if (vao) QOpenGLContext::currentContext()->extraFunctions()->glBindVertexArray(0);
     program->release();
     if (fixedOutput) {
         const QSize fitted = size.scaled(viewportSize, Qt::KeepAspectRatio);

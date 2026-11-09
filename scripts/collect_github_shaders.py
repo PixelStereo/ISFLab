@@ -71,6 +71,97 @@ def discover(terms, token, issues, log):
     return repositories
 
 
+HEADER_TOKEN = re.compile(
+    r'"(?:\\.|[^"\\])*"|//[^\r\n]*|(?<![\w.])(?:[-+]?\d+\.(?![\d.])|[-+]?\.\d+|\+\d+)(?:[eE][-+]?\d+)?'
+)
+TRAILING_COMMA = re.compile(r'"(?:\\.|[^"\\])*"|,(?=\s*[}\]])')
+TEXTURE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tga", ".gif", ".tif", ".tiff", ".exr", ".hdr"}
+
+
+def imported_paths(data):
+    header = HEADER.match(data.removeprefix(b"\xef\xbb\xbf"))
+    if not header or b'"IMPORTED"' not in header[1]:
+        return []
+    try:
+        metadata = json.loads(header[1])
+    except ValueError:
+        if b"materialColorForPixel" not in data and b"laserMaterialFunc" not in data:
+            return []
+        def normalize(match):
+            value = match[0]
+            if value.startswith('"'):
+                return value
+            if value.startswith("//"):
+                return ""
+            return re.sub(r"\.(?=$|[eE])", ".0", re.sub(r"^(-?)\.", r"\g<1>0.", value.lstrip("+")))
+
+        try:
+            text = HEADER_TOKEN.sub(normalize, header[1].decode("utf-8"))
+            metadata = json.loads(TRAILING_COMMA.sub(lambda m: "" if m[0] == "," else m[0], text))
+        except ValueError:
+            return []
+    imports = metadata.get("IMPORTED", {}) if isinstance(metadata, dict) else {}
+    if isinstance(imports, dict):
+        imports = imports.values()
+    elif not isinstance(imports, list):
+        return []
+    return [item["PATH"] for item in imports if isinstance(item, dict)
+            and isinstance(item.get("PATH"), str) and item["PATH"]]
+
+
+def dependency_path(shader, reference):
+    if reference.startswith("/") or ":" in reference or "\\" in reference:
+        return None
+    return clean(posixpath.normpath(posixpath.join(posixpath.dirname(shader), reference)))
+
+
+def repair_textures(output, state, selected, log):
+    restored = unresolved = 0
+    for repo, entry in state["results"].items():
+        if selected and repo.lower() not in selected:
+            continue
+        commit = entry.get("commit", "")
+        if not valid_repo(repo) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+            continue
+        snapshot = output / repo / commit
+        if not snapshot.is_dir() or not snapshot.resolve().is_relative_to(output):
+            continue
+        targets = set()
+        for shader in snapshot.rglob("*.fs"):
+            if shader.is_symlink() or not shader.is_file() or shader.stat().st_size > 8 * 1024 * 1024:
+                continue
+            for reference in imported_paths(shader.read_bytes()):
+                path = dependency_path(shader.relative_to(snapshot).as_posix(), reference)
+                if path and PurePosixPath(path).suffix.lower() in TEXTURE_SUFFIXES and not (snapshot / path).is_file():
+                    targets.add(path)
+        if not targets:
+            continue
+        print(f"{repo}@{commit[:12]}: {len(targets)} missing texture(s)", flush=True)
+        for path in sorted(targets):
+            destination = snapshot / path
+            if destination.is_symlink() or not destination.resolve().is_relative_to(snapshot.resolve()):
+                unresolved += 1
+                continue
+            url = f"https://raw.githubusercontent.com/{repo}/{commit}/{quote(path)}"
+            log(f"  Fetching {path}")
+            try:
+                with request(url) as response:
+                    data = response.read(64 * 1024 * 1024 + 1)
+                if not data or len(data) > 64 * 1024 * 1024 or data.startswith(b"version https://git-lfs.github.com/spec/"):
+                    raise ValueError("empty, oversized, or Git LFS pointer")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with destination.open("xb") as file:
+                    file.write(data)
+                restored += 1
+                log(f"  Restored {path} ({len(data):,} bytes)")
+            except FileExistsError:
+                continue
+            except (OSError, ValueError) as error:
+                print(f"  Unresolved: {path}: {error}", flush=True)
+                unresolved += 1
+    print(f"Textures restored: {restored}; unresolved: {unresolved}", flush=True)
+
+
 def collect_archive(archive, output, log=lambda message: None):
     members = {}
     for info in archive.infolist():
@@ -102,19 +193,9 @@ def collect_archive(archive, output, log=lambda message: None):
             continue
         includes = {match.decode("utf-8", "replace") for match in INCLUDE.findall(data)}
         refs = list(includes)
-        header = HEADER.match(data.removeprefix(b"\xef\xbb\xbf"))
-        if header:
-            try:
-                metadata = json.loads(header[1])
-            except (ValueError, UnicodeError):
-                metadata = {}
-            imports = metadata.get("IMPORTED", {}) if isinstance(metadata, dict) else {}
-            if isinstance(imports, dict):
-                refs.extend(item.get("PATH") for item in imports.values() if isinstance(item, dict))
+        refs.extend(imported_paths(data))
         for ref in refs:
-            if not isinstance(ref, str) or not ref:
-                continue
-            target = clean(posixpath.normpath(posixpath.join(posixpath.dirname(path), ref)))
+            target = dependency_path(path, ref)
             if target not in members:
                 missing.append(f"{path}: {ref}")
                 log(f"  Missing dependency: {path} → {ref}")
@@ -187,6 +268,7 @@ def main():
     parser.add_argument("--query", action="append", help="replace the default GitHub code search terms; repeatable")
     parser.add_argument("--repos-only", action="store_true", help="skip code search and scan the supplied repos")
     parser.add_argument("--resume", action="store_true", help="reuse saved discovery and retry failed repos")
+    parser.add_argument("--repair-textures", action="store_true", help="restore missing textures at the original commits in an existing collection")
     parser.add_argument("-v", "--verbose", action="store_true", help="report search, download and copy progress")
     args = parser.parse_args()
 
@@ -196,6 +278,13 @@ def main():
 
     if any(not valid_repo(repo) for repo in args.repo):
         parser.error("--repo expects owner/repo")
+    if args.repair_textures:
+        output = args.output.resolve()
+        manifest = output / "manifest.json"
+        if not manifest.is_file():
+            parser.error("--repair-textures requires an existing collection manifest")
+        repair_textures(output, json.loads(manifest.read_text()), {repo.lower() for repo in args.repo}, log)
+        return
     if args.repos_only and not args.repo and not args.resume:
         parser.error("--repos-only requires at least one --repo")
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")

@@ -5,6 +5,7 @@
 class ShaderPreview : public QOpenGLWidget {
     Q_OBJECT
 public:
+    static void configureDefaultFormat();
     explicit ShaderPreview(QWidget *parent = nullptr);
     ~ShaderPreview() override;
     void load(const QByteArray &source, const QJsonObject &header, const QString &path);
