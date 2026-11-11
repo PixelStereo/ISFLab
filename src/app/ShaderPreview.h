@@ -3,6 +3,9 @@
 #include <QOpenGLWidget>
 
 class QAudioSource;
+class QAudioDecoder;
+class QTimer;
+#include <QElapsedTimer>
 
 class ShaderPreview : public QOpenGLWidget {
     Q_OBJECT
@@ -22,6 +25,8 @@ public:
     void useTestCard();
     void setLiveInput(std::unique_ptr<LiveInput> input);
     void setShaderInput(const QString &name, const QByteArray &source, const QJsonObject &header, const QString &path);
+    enum class AudioMode { Live, Off, File };
+    void setAudioMode(AudioMode mode, const QString &file = {});
     void setAudioDevice(const QByteArray &id);
     QString audioStatus() const { return audioMessage; }
     void setImage(const QString &name, const QImage &image);
@@ -42,6 +47,8 @@ protected:
     void paintGL() override;
 private:
     void syncAudio();
+    void startFileAudio();
+    void stopFileAudio();
     void setAudioStatus(const QString &message);
     void reportPointer(const QPointF &position);
     void releaseEngine();
@@ -49,7 +56,13 @@ private:
     ShaderEngine engine;
     std::unique_ptr<QAudioSource> audioSource;
     QByteArray audioDeviceId, runningAudioDevice, audioBuffer;
-    QString audioMessage;
+    QString audioMessage, audioFile, fileLoadedPath;
+    AudioMode audioMode = AudioMode::Live;
+    std::unique_ptr<QAudioDecoder> decoder;
+    QList<QList<float>> fileWaves;
+    int fileRate = 0;
+    QElapsedTimer fileClock;
+    QTimer *fileTimer = nullptr;
     bool microphoneRequestPending = false;
     QSize reportedRenderSize;
     QMetaObject::Connection contextCleanup;

@@ -1,6 +1,10 @@
 #include "ShaderPreview.h"
 #include <QMouseEvent>
+#include <QAudioBuffer>
+#include <QAudioDecoder>
 #include <QAudioDevice>
+#include <QElapsedTimer>
+#include <QFileInfo>
 #include <QAudioSource>
 #include <QCoreApplication>
 #include <QIODevice>
@@ -45,6 +49,15 @@ QList<float> audioSpectrum(const QList<float> &wave) {
     for (int i = 0; i < audioFrames / 2; ++i)
         spectrum.append(float(std::abs(fft[i]) * (i == 0 ? 2.0 : 4.0) / audioFrames));
     return spectrum;
+}
+
+std::shared_ptr<ShaderEngine::AudioFrame> makeAudioFrame(QList<QList<float>> waves) {
+    auto frame = std::make_shared<ShaderEngine::AudioFrame>();
+    for (auto &wave : waves) {
+        frame->spectrum.append(audioSpectrum(wave));
+        frame->wave.append(std::move(wave));
+    }
+    return frame;
 }
 }
 
@@ -109,6 +122,83 @@ void ShaderPreview::setAudioDevice(const QByteArray &id) {
     syncAudio();
 }
 
+void ShaderPreview::setAudioMode(AudioMode mode, const QString &file) {
+    audioMode = mode;
+    audioFile = file;
+    fileLoadedPath.clear();
+    syncAudio();
+}
+
+void ShaderPreview::stopFileAudio() {
+    if (fileTimer) fileTimer->stop();
+    if (decoder) { decoder->disconnect(this); decoder->stop(); decoder.reset(); }
+    fileWaves.clear();
+    fileLoadedPath.clear();
+}
+
+void ShaderPreview::startFileAudio() {
+    if (audioFile.isEmpty() || !QFileInfo::exists(audioFile)) {
+        stopFileAudio();
+        engine.setAudioFrame({});
+        setAudioStatus("No audio file selected");
+        update();
+        return;
+    }
+    if (fileLoadedPath == audioFile && (decoder || !fileWaves.isEmpty())) return;
+    stopFileAudio();
+    engine.setAudioFrame({});
+    fileLoadedPath = audioFile;
+    setAudioStatus("Decoding " + QFileInfo(audioFile).fileName() + "…");
+    decoder = std::make_unique<QAudioDecoder>();
+    QAudioFormat format;
+    format.setSampleFormat(QAudioFormat::Float);
+    decoder->setAudioFormat(format);
+    decoder->setSource(QUrl::fromLocalFile(audioFile));
+    connect(decoder.get(), &QAudioDecoder::bufferReady, this, [this] {
+        const auto buffer = decoder->read();
+        const auto &format = buffer.format();
+        if (!buffer.isValid() || format.sampleFormat() != QAudioFormat::Float) return;
+        fileRate = format.sampleRate();
+        if (fileWaves.isEmpty()) fileWaves.resize(format.channelCount());
+        const auto *data = buffer.constData<float>();
+        const int channels = format.channelCount();
+        if (channels != fileWaves.size()) return;
+        for (int i = 0; i < buffer.frameCount(); ++i)
+            for (int c = 0; c < channels; ++c) fileWaves[c].append(data[i * channels + c]);
+    });
+    connect(decoder.get(), &QAudioDecoder::finished, this, [this] {
+        if (fileWaves.isEmpty() || fileWaves.first().isEmpty() || fileRate <= 0) {
+            setAudioStatus("Could not decode audio file");
+            return;
+        }
+        setAudioStatus(QFileInfo(audioFile).fileName() + " (loop)");
+        fileClock.start();
+        if (!fileTimer) {
+            fileTimer = new QTimer(this);
+            fileTimer->setInterval(16);
+            connect(fileTimer, &QTimer::timeout, this, [this] {
+                if (fileWaves.isEmpty()) return;
+                const qint64 total = fileWaves.first().size();
+                const qint64 end = (fileClock.nsecsElapsed() * fileRate / 1000000000LL) % total;
+                QList<QList<float>> waves;
+                for (const auto &channel : std::as_const(fileWaves)) {
+                    QList<float> wave(audioFrames);
+                    for (int i = 0; i < audioFrames; ++i)
+                        wave[i] = channel.at(((end - audioFrames + 1 + i) % total + total) % total);
+                    waves.append(std::move(wave));
+                }
+                engine.setAudioFrame(makeAudioFrame(std::move(waves)));
+                update();
+            });
+        }
+        fileTimer->start();
+    });
+    connect(decoder.get(), qOverload<QAudioDecoder::Error>(&QAudioDecoder::error), this, [this] {
+        setAudioStatus("Could not decode audio file");
+    });
+    decoder->start();
+}
+
 void ShaderPreview::setAudioStatus(const QString &message) {
     if (audioMessage == message) return;
     audioMessage = message;
@@ -117,7 +207,16 @@ void ShaderPreview::setAudioStatus(const QString &message) {
 
 void ShaderPreview::syncAudio() {
     QAudioDevice device;
-    const bool needed = engine.needsAudio() && audioDeviceId != "disabled";
+    const bool needed = engine.needsAudio() && audioMode == AudioMode::Live && audioDeviceId != "disabled";
+    if (audioMode == AudioMode::File) {
+        if (audioSource) audioSource->disconnect(this);
+        audioSource.reset();
+        runningAudioDevice.clear();
+        audioBuffer.clear();
+        startFileAudio();
+        return;
+    }
+    stopFileAudio();
     if (needed) {
         if (audioDeviceId.isEmpty()) device = QMediaDevices::defaultAudioInput();
         else for (const auto &candidate : QMediaDevices::audioInputs()) {
@@ -133,7 +232,8 @@ void ShaderPreview::syncAudio() {
     engine.setAudioFrame({});
     update();
     if (!needed || device.isNull()) {
-        setAudioStatus(!needed ? "Audio input disabled" : "Audio input unavailable");
+        setAudioStatus(audioMode == AudioMode::Off || audioDeviceId == "disabled" ? "Audio input disabled" :
+                       !needed ? "Audio input idle" : "Audio input unavailable");
         return;
     }
 
@@ -185,16 +285,16 @@ void ShaderPreview::syncAudio() {
         if (complete == 0) return;
         const int count = int(qMin<qsizetype>(audioFrames, complete));
         if (complete > audioFrames) audioBuffer.remove(0, (complete - audioFrames) * stride);
-        auto frame = std::make_shared<ShaderEngine::AudioFrame>();
+        QList<QList<float>> waves;
         for (int channel = 0; channel < format.channelCount(); ++channel) {
             QList<float> wave(audioFrames, 0.f);
             for (int i = 0; i < count; ++i) {
                 const auto *sample = audioBuffer.constData() + i * stride + channel * format.bytesPerSample();
                 wave[audioFrames - count + i] = format.normalizedSampleValue(sample);
             }
-            frame->spectrum.append(audioSpectrum(wave));
-            frame->wave.append(std::move(wave));
+            waves.append(std::move(wave));
         }
+        auto frame = makeAudioFrame(std::move(waves));
         engine.setAudioFrame(std::move(frame));
         update();
     });

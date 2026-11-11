@@ -21,6 +21,7 @@
 #include <QDir>
 #include <QDockWidget>
 #include <QDragEnterEvent>
+#include <QActionGroup>
 #include <QFileDialog>
 #include <QFontDatabase>
 #include <QJsonArray>
@@ -709,7 +710,46 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     timeline->setSingleStep(0.01);
     timeline->setSuffix(" s");
     timeline->setAccessibleName("Preview time");
-    transport->addWidget(playing); transport->addWidget(reset); transport->addWidget(timeline, 1);
+    auto *audioButton = new QToolButton;
+    audioButton->setText("Audio");
+    audioButton->setPopupMode(QToolButton::InstantPopup);
+    audioButton->setToolTip("Audio source for every audio input: live, off, or a looped file.");
+    auto *audioMenu = new QMenu(audioButton);
+    auto *audioGroup = new QActionGroup(audioMenu);
+    auto *audioLive = audioMenu->addAction("Live input");
+    auto *audioOff = audioMenu->addAction("Off");
+    auto *audioFileAction = audioMenu->addAction("Loop audio file…");
+    for (auto *action : {audioLive, audioOff, audioFileAction}) { action->setCheckable(true); audioGroup->addAction(action); }
+    audioButton->setMenu(audioMenu);
+    const auto applyAudio = [this, audioButton, audioLive, audioOff, audioFileAction](ShaderPreview::AudioMode mode, const QString &file) {
+        QSettings settings;
+        settings.setValue("audio/mode", int(mode));
+        settings.setValue("audio/file", file);
+        (mode == ShaderPreview::AudioMode::Live ? audioLive : mode == ShaderPreview::AudioMode::Off ? audioOff : audioFileAction)->setChecked(true);
+        audioButton->setText(mode == ShaderPreview::AudioMode::Live ? "Audio: Live" :
+                             mode == ShaderPreview::AudioMode::Off ? "Audio: Off" : "Audio: " + QFileInfo(file).fileName());
+        preview->setAudioMode(mode, file);
+    };
+    connect(audioLive, &QAction::triggered, this, [=] { applyAudio(ShaderPreview::AudioMode::Live, {}); });
+    connect(audioOff, &QAction::triggered, this, [=] { applyAudio(ShaderPreview::AudioMode::Off, {}); });
+    connect(audioFileAction, &QAction::triggered, this, [=] {
+        const auto previous = QSettings().value("audio/file").toString();
+        const auto file = QFileDialog::getOpenFileName(this, "Audio file to loop", previous,
+                                                       "Audio (*.wav *.mp3 *.flac *.ogg *.m4a *.aac *.aif *.aiff);;All files (*)");
+        if (file.isEmpty()) {
+            const auto mode = QSettings().value("audio/mode", 0).toInt();
+            (mode == 1 ? audioOff : mode == 2 ? audioFileAction : audioLive)->setChecked(true);
+            return;
+        }
+        applyAudio(ShaderPreview::AudioMode::File, file);
+    });
+    {
+        const QSettings settings;
+        const auto mode = ShaderPreview::AudioMode(qBound(0, settings.value("audio/mode", 0).toInt(), 2));
+        const auto file = settings.value("audio/file").toString();
+        applyAudio(mode == ShaderPreview::AudioMode::File && file.isEmpty() ? ShaderPreview::AudioMode::Live : mode, file);
+    }
+    transport->addWidget(playing); transport->addWidget(reset); transport->addWidget(audioButton); transport->addWidget(timeline, 1);
     viewerLayout->addLayout(transport);
     previewStatus = plainLabel("Select a shader to preview.");
     previewStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
@@ -720,8 +760,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         if (status == "Preview compiled") {
             if (previewErrors.remove(active)) refresh();
         } else if (previewErrors.value(active) != status) {
+            // The errored shader leaves the current filter; park the keyboard cursor on the
+            // row above it so Up/Down continues from this position instead of restarting.
+            QTreeWidgetItem *anchor = nullptr;
+            if (auto *row = rows.value(active); row && !row->isHidden() && tree->currentItem() == row)
+                anchor = tree->itemAbove(row);
             previewErrors.insert(active, status);
             refresh();
+            if (anchor && !anchor->isHidden() && rows.value(active) && rows.value(active)->isHidden()) {
+                const QSignalBlocker blocker(tree);
+                tree->setCurrentItem(anchor, 0, QItemSelectionModel::NoUpdate);
+            }
         }
     });
     connect(preview, &ShaderPreview::timeChanged, this, [=](double seconds) {
