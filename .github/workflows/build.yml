@@ -83,8 +83,9 @@ jobs:
       - name: Sign and archive macOS bundle
         if: runner.os == 'macOS'
         run: |
-          app=package/ISFLab.app
-          exe="$app/Contents/MacOS/ISFLab"
+          app_name="$(python3 -c 'import json; print(json.load(open("build-ci/application.json"))["name"])')"
+          app="package/$app_name.app"
+          exe="$app/Contents/MacOS/$app_name"
           file "$exe" | grep -q arm64
           test -f "$app/Contents/PlugIns/platforms/libqcocoa.dylib"
           # ISFLab does not use PDF/SVG image plugins or the Qt virtual keyboard.
@@ -124,7 +125,8 @@ jobs:
           if (!$crt) { throw "Microsoft Visual C++ runtime DLLs are missing from the build environment" }
           Copy-Item (Join-Path $crt.FullName "*.dll") -Destination $bin -Force -ErrorAction Stop
           $qtPlatform = Get-ChildItem package -Recurse -File -Filter qwindows.dll | Select-Object -First 1
-          foreach ($file in @("ISFLab.exe", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")) {
+          $appExe = (Get-Content build-ci/application.json | ConvertFrom-Json).executable
+          foreach ($file in @($appExe, "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")) {
             if (!(Test-Path (Join-Path $bin $file))) { throw "Missing portable Windows dependency: $file" }
           }
           if (!$qtPlatform) { throw "The Qt Windows platform plugin is missing" }
@@ -135,7 +137,8 @@ jobs:
           choco install nsis --yes --no-progress
           if ($LASTEXITCODE -ne 0) { throw "NSIS installation failed" }
           $compiler = Join-Path ${env:ProgramFiles(x86)} "NSIS/makensis.exe"
-          & $compiler "/DTAG_SUFFIX=$env:TAG_SUFFIX" packaging/windows.nsi
+          $app = Get-Content build-ci/application.json | ConvertFrom-Json
+          & $compiler "/DTAG_SUFFIX=$env:TAG_SUFFIX" "/DAPP_NAME=$($app.name)" "/DAPP_EXE=$($app.executable)" packaging/windows.nsi
           if ($LASTEXITCODE -ne 0 -or !(Test-Path "ISFLab-Windows-x64$env:TAG_SUFFIX-Setup.exe")) {
             throw "Windows installer build failed"
           }

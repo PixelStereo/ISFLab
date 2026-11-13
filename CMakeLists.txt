@@ -108,9 +108,17 @@ if(MSVC)
     target_compile_options(ISFLabEngine PRIVATE /utf-8)
     target_compile_options(ISFLabCore PRIVATE /utf-8)
 endif()
+# The application carries its version in its name ("ISFLab v0.1.5.app"), as NyxMap does.
+# Linux keeps the plain executable name that the .desktop entry launches.
+set(ISFLAB_APP_NAME "ISFLab v${ISFLAB_DISPLAY_VERSION}")
+if(APPLE OR WIN32)
+    set_target_properties(ISFLab PROPERTIES OUTPUT_NAME "${ISFLAB_APP_NAME}")
+endif()
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/application.json"
+    CONTENT "{\"name\":\"${ISFLAB_APP_NAME}\",\"version\":\"${ISFLAB_DISPLAY_VERSION}\",\"executable\":\"$<TARGET_FILE_NAME:ISFLab>\"}\n")
 set_target_properties(ISFLab PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER "studio.pixelstereo.isflab"
-    MACOSX_BUNDLE_BUNDLE_NAME "ISFLab"
+    MACOSX_BUNDLE_BUNDLE_NAME "${ISFLAB_APP_NAME}"
     MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
     MACOSX_BUNDLE_COPYRIGHT "Pixel Stereo"

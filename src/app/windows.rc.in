@@ -13,7 +13,7 @@ BEGIN
    VALUE "CompanyName", "Pixel Stereo"
    VALUE "FileDescription", "ISFLab"
    VALUE "FileVersion", "@PROJECT_VERSION@"
-   VALUE "OriginalFilename", "ISFLab.exe"
+   VALUE "OriginalFilename", "@ISFLAB_APP_NAME@.exe"
    VALUE "ProductName", "ISFLab"
    VALUE "ProductVersion", "@PROJECT_VERSION@"
   END

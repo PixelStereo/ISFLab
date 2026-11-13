@@ -37,10 +37,10 @@ cmake --build build --config "$config" --parallel
 
 if [[ "$run" == 1 ]]; then
     case "$(uname -s)" in
-        Darwin) open "$PWD/build/ISFLab.app" ;;
+        Darwin) open "$(ls -d "$PWD"/build/ISFLab*.app | head -1)" ;;
         MINGW*|MSYS*|CYGWIN*)
-            executable="$PWD/build/$config/ISFLab.exe"
-            [[ -f "$executable" ]] || executable="$PWD/build/ISFLab.exe"
+            executable="$(ls "$PWD/build/$config"/ISFLab*.exe | head -1)"
+            [[ -f "$executable" ]] || executable="$(ls "$PWD"/build/ISFLab*.exe | head -1)"
             "$executable" & ;;
         *) "$PWD/build/ISFLab" & ;;
     esac
