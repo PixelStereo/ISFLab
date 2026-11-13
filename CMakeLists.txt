@@ -110,12 +110,10 @@ if(MSVC)
 endif()
 # The application carries its version in its name ("ISFLab v0.1.5.app"), as NyxMap does.
 # Linux keeps the plain executable name that the .desktop entry launches.
-# Qt's Windows deploy script cannot take a space in the executable name, so Windows uses a dash.
+# Qt's Windows deploy script cannot take a space in the executable name: on Windows the build keeps
+# ISFLab.exe and the CI renames it to "ISFLab v0.1.7.exe" once the install has deployed Qt.
 set(ISFLAB_APP_NAME "ISFLab v${ISFLAB_DISPLAY_VERSION}")
-if(WIN32)
-    set(ISFLAB_APP_NAME "ISFLab-v${ISFLAB_DISPLAY_VERSION}")
-endif()
-if(APPLE OR WIN32)
+if(APPLE)
     set_target_properties(ISFLab PROPERTIES OUTPUT_NAME "${ISFLAB_APP_NAME}")
 endif()
 file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/application.json"

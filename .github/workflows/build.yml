@@ -120,12 +120,14 @@ jobs:
         shell: pwsh
         run: |
           $bin = "package/bin"
+          $appName = (Get-Content build-ci/application.json | ConvertFrom-Json).name
+          Rename-Item (Join-Path $bin "ISFLab.exe") "$appName.exe"
           $crt = Get-ChildItem (Join-Path $env:VCToolsRedistDir "x64") -Directory -Filter "Microsoft.VC*.CRT" |
             Select-Object -First 1
           if (!$crt) { throw "Microsoft Visual C++ runtime DLLs are missing from the build environment" }
           Copy-Item (Join-Path $crt.FullName "*.dll") -Destination $bin -Force -ErrorAction Stop
           $qtPlatform = Get-ChildItem package -Recurse -File -Filter qwindows.dll | Select-Object -First 1
-          $appExe = (Get-Content build-ci/application.json | ConvertFrom-Json).executable
+          $appExe = "$appName.exe"
           foreach ($file in @($appExe, "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")) {
             if (!(Test-Path (Join-Path $bin $file))) { throw "Missing portable Windows dependency: $file" }
           }
@@ -138,7 +140,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "NSIS installation failed" }
           $compiler = Join-Path ${env:ProgramFiles(x86)} "NSIS/makensis.exe"
           $app = Get-Content build-ci/application.json | ConvertFrom-Json
-          & $compiler "/DTAG_SUFFIX=$env:TAG_SUFFIX" "/DAPP_NAME=$($app.name)" "/DAPP_EXE=$($app.executable)" packaging/windows.nsi
+          & $compiler "/DTAG_SUFFIX=$env:TAG_SUFFIX" "/DAPP_NAME=$($app.name)" "/DAPP_EXE=$($app.name).exe" packaging/windows.nsi
           if ($LASTEXITCODE -ne 0 -or !(Test-Path "ISFLab-Windows-x64$env:TAG_SUFFIX-Setup.exe")) {
             throw "Windows installer build failed"
           }
