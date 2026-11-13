@@ -1,6 +1,9 @@
 Unicode true
 Name "ISFLab"
-OutFile "..\ISFLab-Windows-x64-Setup.exe"
+!ifndef TAG_SUFFIX
+  !define TAG_SUFFIX ""
+!endif
+OutFile "..\ISFLab-Windows-x64${TAG_SUFFIX}-Setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\ISFLab"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma

@@ -6,6 +6,26 @@ if(DEFINED ISFLAB_TAG_VERSION)
 endif()
 project(ISFLab VERSION "${isflab_version}" LANGUAGES CXX)
 
+# Published tag builds carry the plain release number; every other build also carries the
+# short commit it was built from (for example 0.1.4_1a2b3c4d).
+set(ISFLAB_DISPLAY_VERSION "${PROJECT_VERSION}")
+if(NOT DEFINED ISFLAB_TAG_VERSION AND NOT ISFLAB_RELEASE_BUILD)
+    execute_process(COMMAND git rev-parse --short=8 HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE isflab_commit OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(NOT isflab_commit MATCHES "^[0-9a-f]+$")
+        set(isflab_commit "unknown")
+    endif()
+    string(APPEND ISFLAB_DISPLAY_VERSION "_${isflab_commit}")
+    foreach(isflab_ref HEAD packed-refs)
+        execute_process(COMMAND git rev-parse --path-format=absolute --git-path ${isflab_ref}
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" OUTPUT_VARIABLE isflab_ref_path
+            OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(EXISTS "${isflab_ref_path}")
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${isflab_ref_path}")
+        endif()
+    endforeach()
+endif()
+
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets OpenGL OpenGLWidgets Multimedia)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -82,7 +102,7 @@ endif()
 target_sources(ISFLabEngine PRIVATE src/engine/input/LiveInput.h ${live_source})
 target_link_libraries(ISFLabEngine PRIVATE ${live_libraries})
 target_link_libraries(ISFLab PRIVATE ISFLabEngine Qt6::Widgets Qt6::OpenGLWidgets Qt6::Multimedia)
-target_compile_definitions(ISFLab PRIVATE ISFLAB_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(ISFLab PRIVATE ISFLAB_VERSION="${ISFLAB_DISPLAY_VERSION}")
 if(MSVC)
     target_compile_options(ISFLab PRIVATE /utf-8)
     target_compile_options(ISFLabEngine PRIVATE /utf-8)

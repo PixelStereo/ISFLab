@@ -45,6 +45,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libgl1-mesa-dev libxkbcommon-dev libxcb-cursor0 xvfb xauth \
             libgl1-mesa-dri libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-bad
+      - name: Release file suffix
+        shell: bash
+        run: |
+          suffix=""
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" == v* ]]; then suffix="-$GITHUB_REF_NAME"; fi
+          echo "TAG_SUFFIX=$suffix" >> "$GITHUB_ENV"
       - name: Configure
         shell: bash
         run: |
@@ -107,7 +113,7 @@ jobs:
           done < <(find "$app/Contents" -depth -type d \( -name '*.framework' -o -name '*.bundle' -o -name '*.app' \) -print0)
           codesign --force --sign - "$app"
           codesign --verify --deep --strict "$app"
-          ditto -c -k --keepParent "$app" ISFLab-macOS-arm64.zip
+          ditto -c -k --keepParent "$app" "ISFLab-macOS-arm64${TAG_SUFFIX}.zip"
       - name: Bundle Windows runtime DLLs alongside ISFLab
         if: runner.os == 'Windows'
         shell: pwsh
@@ -129,20 +135,20 @@ jobs:
           choco install nsis --yes --no-progress
           if ($LASTEXITCODE -ne 0) { throw "NSIS installation failed" }
           $compiler = Join-Path ${env:ProgramFiles(x86)} "NSIS/makensis.exe"
-          & $compiler packaging/windows.nsi
-          if ($LASTEXITCODE -ne 0 -or !(Test-Path ISFLab-Windows-x64-Setup.exe)) {
+          & $compiler "/DTAG_SUFFIX=$env:TAG_SUFFIX" packaging/windows.nsi
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path "ISFLab-Windows-x64$env:TAG_SUFFIX-Setup.exe")) {
             throw "Windows installer build failed"
           }
       - name: Archive Linux executable
         if: runner.os == 'Linux'
-        run: tar -C package -czf ISFLab-Linux-x64.tar.gz .
+        run: tar -C package -czf "ISFLab-Linux-x64${TAG_SUFFIX}.tar.gz" .
       - uses: actions/upload-artifact@v4
         with:
           name: ISFLab-${{ matrix.artifact }}
           path: |
             ISFLab-*.zip
             ISFLab-*.tar.gz
-            ISFLab-Windows-x64-Setup.exe
+            ISFLab-Windows-x64*-Setup.exe
           if-no-files-found: error
 
   release:
@@ -163,7 +169,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          assets=(release/ISFLab-macOS-arm64.zip release/ISFLab-Windows-x64-Setup.exe release/ISFLab-Linux-x64.tar.gz)
+          assets=("release/ISFLab-macOS-arm64-$RELEASE_TAG.zip" "release/ISFLab-Windows-x64-$RELEASE_TAG-Setup.exe" "release/ISFLab-Linux-x64-$RELEASE_TAG.tar.gz")
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
             gh release edit "$RELEASE_TAG" --draft=false

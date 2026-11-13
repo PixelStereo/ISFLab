@@ -579,6 +579,7 @@ varying vec2 isf_FragNormCoord;
 #define vv_FragNormCoord isf_FragNormCoord
 #define IMG_NORM_PIXEL(img, p) texture2D(img, p)
 #define IMG_NORM_THIS_PIXEL(img) texture2D(img, isf_FragNormCoord)
+#define IMG_THIS_NORM_PIXEL(img) texture2D(img, isf_FragNormCoord)
 )";
     if (material) {
         frag += "uniform float CLOCK_TIME;\n";

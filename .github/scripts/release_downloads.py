@@ -6,10 +6,11 @@ import re
 import sys
 
 
+# Release files carry the tag, as in NyxMap: ISFLab-macOS-arm64-v0.1.5.zip
 ASSETS = {
-    "macOS ARM64": "ISFLab-macOS-arm64.zip",
-    "Windows x64": "ISFLab-Windows-x64-Setup.exe",
-    "Linux x64": "ISFLab-Linux-x64.tar.gz",
+    "macOS ARM64": "ISFLab-macOS-arm64-{tag}.zip",
+    "Windows x64": "ISFLab-Windows-x64-{tag}-Setup.exe",
+    "Linux x64": "ISFLab-Linux-x64-{tag}.tar.gz",
 }
 START = "<!-- release-downloads:start -->"
 END = "<!-- release-downloads:end -->"
@@ -24,8 +25,11 @@ def download_block(releases, repository):
             continue
         assets = {item["name"]: item["browser_download_url"] for item in release.get("assets", [])
                   if item.get("state") == "uploaded" and item.get("size", 0) > 0}
-        urls = {platform: f"{base}/download/{tag}/{name}" for platform, name in ASSETS.items()}
-        if any(assets.get(name) != urls[platform] for platform, name in ASSETS.items()):
+        names = {platform: name.format(tag=tag) for platform, name in ASSETS.items()}
+        if any(name not in assets for name in names.values()):
+            names = {platform: name.replace("-{tag}", "").format(tag=tag) for platform, name in ASSETS.items()}  # releases before v0.1.5
+        urls = {platform: f"{base}/download/{tag}/{name}" for platform, name in names.items()}
+        if any(assets.get(name) != urls[platform] for platform, name in names.items()):
             continue
         preview = " (preview)" if release.get("prerelease") else ""
         links = " · ".join(f"[{platform}]({url})" for platform, url in urls.items())
