@@ -53,6 +53,17 @@ qt_add_executable(ISFLab WIN32 MACOSX_BUNDLE
     src/app/SettingsKeys.h
     src/app/ShaderTypes.h src/app/ShaderTypes.cpp
     src/app/MainWindow.h src/app/MainWindow.cpp
+    src/app/MediaBin.h src/app/MediaBin.cpp
+    src/app/LibraryActions.h src/app/LibraryActions.cpp
+    src/app/PreviewPanel.h src/app/PreviewPanel.cpp
+    src/app/ParameterPanel.h src/app/ParameterPanel.cpp
+    src/app/PointPad.h src/app/PointPad.cpp
+    src/app/ShaderDocument.h src/app/ShaderDocument.cpp
+    src/app/SourceEditor.h src/app/SourceEditor.cpp
+    src/app/FindBar.h src/app/FindBar.cpp
+    src/app/HeaderInspector.h src/app/HeaderInspector.cpp
+    src/app/DiagnosticsPanel.h src/app/DiagnosticsPanel.cpp
+    src/app/UiHelpers.h
     src/app/ShaderPreview.h src/app/ShaderPreview.cpp
     src/app/SliderField.h src/app/SliderField.cpp
     src/app/ColorPicker.h src/app/ColorPicker.cpp
