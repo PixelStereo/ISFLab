@@ -11,3 +11,10 @@ void applyMacApplicationIcon() {
         [icon release];
     }
 }
+
+// Background helper processes (the shader check worker) must not show a Dock icon or take focus.
+void hideMacApplicationFromDock() {
+    @autoreleasepool {
+        [[NSApplication sharedApplication] setActivationPolicy:NSApplicationActivationPolicyProhibited];
+    }
+}

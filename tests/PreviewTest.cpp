@@ -1,5 +1,6 @@
 #include "ISFScanner.h"
 #include "ShaderPreview.h"
+#include "ShaderChecker.h"
 #include <QApplication>
 #include <QFile>
 #include <QTemporaryDir>
@@ -179,6 +180,20 @@ int main(int argc, char **argv) {
         preview.setFixedRenderSize(QSize(80, 160));
         preview.grabFramebuffer();
         if (!compiled) qFatal("Preview did not recover after reducing the size");
+
+        // The batch checker reports the same results as the preview, while the preview keeps working.
+        ShaderChecker checker;
+        if (const auto error = checker.initialize(); !error.isEmpty()) qFatal("Checker: %s", qPrintable(error));
+        const QByteArray valid = R"(/*{"INPUTS":[{"NAME":"inputImage","TYPE":"image"}]}*/
+            void main() { gl_FragColor = IMG_THIS_NORM_PIXEL(inputImage); })";
+        const QByteArray broken = R"(/*{"INPUTS":[]}*/
+            void main() { gl_FragColor = vec4(undeclaredValue); })";
+        if (const auto error = checker.check(valid, *ISFScanner::header(valid), {}); !error.isEmpty())
+            qFatal("A valid shader failed the check: %s", qPrintable(error));
+        if (!checker.check(broken, *ISFScanner::header(broken), {}).contains("undeclaredValue"))
+            qFatal("A compiler error was not reported by the check");
+        preview.grabFramebuffer();
+        if (!compiled) qFatal("The preview stopped rendering after a batch check");
         app.quit();
     });
     return app.exec();
