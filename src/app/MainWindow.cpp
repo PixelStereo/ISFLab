@@ -2,6 +2,8 @@
 #include "AppStyle.h"
 #include "ColorPicker.h"
 #include "ShaderPreview.h"
+#include "SettingsKeys.h"
+#include "ShaderTypes.h"
 #include "SliderField.h"
 #include "ZipExport.h"
 #include <QAction>
@@ -268,14 +270,7 @@ protected:
     }
 };
 
-const QString filter = "ISF shaders (*.fs *.isf *.FS *.ISF)";
-std::optional<ShaderEntry> readShader(const QString &path) {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) return std::nullopt;
-    const auto source = file.readAll();
-    if (file.error() != QFile::NoError) return std::nullopt;
-    return ShaderEntry{path, source, ISFScanner::header(source)};
-}
+std::optional<ShaderEntry> readShader(const QString &path) { return ShaderEntry::read(path); }
 QLabel *plainLabel(const QString &text = {}) {
     auto *label = new QLabel(text);
     label->setTextFormat(Qt::PlainText);
@@ -293,7 +288,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         if (!path.isEmpty()) importPaths({path});
     });
     auto *openFiles = file->addAction("Import shaders…", QKeySequence::Open, this, [this] {
-        importPaths(QFileDialog::getOpenFileNames(this, "Import ISF shaders", folder, filter));
+        importPaths(QFileDialog::getOpenFileNames(this, "Import ISF shaders", folder, ISFScanner::shaderFileFilter()));
     });
     file->addAction("Load examples", this, [this] {
 #ifdef Q_OS_MACOS
@@ -319,7 +314,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     });
     file->addAction("New shader…", QKeySequence::New, this, [this] {
         if (!resolveChanges()) return;
-        auto path = QFileDialog::getSaveFileName(this, "Create shader", QDir(folder).filePath("Untitled.fs"), filter);
+        auto path = QFileDialog::getSaveFileName(this, "Create shader", QDir(folder).filePath("Untitled.fs"), ISFScanner::shaderFileFilter());
         if (path.isEmpty()) return;
         if (QFileInfo(path).suffix().isEmpty()) path += ".fs";
         QFile output(path);
@@ -356,7 +351,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         for (const auto &device : QMediaDevices::audioInputs())
             input->addItem(device.description(), device.id());
         QSettings settings;
-        const auto saved = settings.value("audio/inputDevice", QByteArray{}).toByteArray();
+        const auto saved = settings.value(SettingsKeys::AudioInputDevice, QByteArray{}).toByteArray();
         if (input->findData(saved) < 0) input->addItem("Previously selected device (unavailable)", saved);
         input->setCurrentIndex(input->findData(saved));
         layout->addRow("Audio input", input);
@@ -366,7 +361,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
         if (dialog.exec() != QDialog::Accepted) return;
         const auto id = input->currentData().toByteArray();
-        settings.setValue("audio/inputDevice", id);
+        settings.setValue(SettingsKeys::AudioInputDevice, id);
         preview->setAudioDevice(id);
     });
     preferences->setMenuRole(QAction::PreferencesRole);
@@ -481,20 +476,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         }
         refresh();
     });
-    for (const auto kind : {ISFType::Generator, ISFType::FX, ISFType::Transition, ISFType::Unknown, ISFType::NonISF, ISFType::MadMapper}) {
-        auto *tab = new QPushButton(kind == ISFType::MadMapper ? "MadMapper" : kind == ISFType::NonISF ? "Non-ISF" : kind == ISFType::Unknown ? "ERR" : kind == ISFType::FX ? "Filter" : ISFScanner::typeToString(kind));
+    for (const auto &info : shaderTypes()) {
+        auto *tab = new QPushButton(info.filterLabel);
         tab->setProperty("filterTab", true);
-        tab->setObjectName(kind == ISFType::Generator ? "generatorType" : kind == ISFType::FX ? "effectType" : kind == ISFType::Transition ? "transitionType" : kind == ISFType::Unknown ? "errorType" : kind == ISFType::NonISF ? "nonIsfType" : "madMapperType");
+        tab->setObjectName(info.objectName);
         tab->setCheckable(true);
         tab->setChecked(true);
-        tab->setToolTip(kind == ISFType::Unknown ? "Invalid headers and errors detected in preview." :
-                        kind == ISFType::NonISF ? "Fragment files without an ISF JSON header." :
-                        kind == ISFType::MadMapper ? "Materials with a MadMapper fragment entry point." :
-                        "Toggle this shader type. Several types can be active.");
-        typeTabs.insert(kind, tab);
-        auto *row = kind == ISFType::Generator || kind == ISFType::FX || kind == ISFType::Transition
-            ? typeLayout : otherTypes;
-        row->addWidget(tab, 1);
+        tab->setToolTip(info.toolTip);
+        typeTabs.insert(info.type, tab);
+        (info.primary ? typeLayout : otherTypes)->addWidget(tab, 1);
         connect(tab, &QPushButton::toggled, this, &MainWindow::refresh);
     }
     categoryButton = new QToolButton;
@@ -567,12 +557,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     tree->setMinimumWidth(315);
     auto *flatToggle = new QCheckBox("Don’t show folder hierarchy");
     flatToggle->setToolTip("Show shaders in a flat list without folder rows.");
-    flatBin = QSettings().value("mediaBin/shadersOnly", false).toBool();
+    flatBin = QSettings().value(SettingsKeys::BinFlat, false).toBool();
     flatToggle->setChecked(flatBin);
     tree->setRootIsDecorated(!flatBin);
     connect(flatToggle, &QCheckBox::toggled, this, [this](bool enabled) {
         flatBin = enabled;
-        QSettings().setValue("mediaBin/shadersOnly", enabled);
+        QSettings().setValue(SettingsKeys::BinFlat, enabled);
         tree->setRootIsDecorated(!enabled);
         refresh();
     });
@@ -605,12 +595,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     auto *diagnosticCounts = new QHBoxLayout;
     footerLayout->addLayout(stats);
     footerLayout->addLayout(diagnosticCounts);
-    for (const auto kind : {ISFType::Generator, ISFType::FX, ISFType::Transition, ISFType::Unknown, ISFType::NonISF, ISFType::MadMapper}) {
+    for (const auto &info : shaderTypes()) {
         auto *label = plainLabel();
-        label->setStyleSheet("color:" + AppStyle::typeColor(kind).name() + "; font-size:11px; font-weight:600;");
-        typeCounts.insert(kind, label);
-        auto *row = kind == ISFType::Unknown || kind == ISFType::NonISF || kind == ISFType::MadMapper ? diagnosticCounts : stats;
-        row->addWidget(label, 1);
+        label->setStyleSheet("color:" + info.color.name() + "; font-size:11px; font-weight:600;");
+        typeCounts.insert(info.type, label);
+        (info.primary ? stats : diagnosticCounts)->addWidget(label, 1);
     }
     left->addWidget(footer);
     auto *clearBin = new QPushButton("Clear");
@@ -668,12 +657,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     connect(preview, &ShaderPreview::renderSizeChanged, this, showResolution);
     const auto setRenderSize = [this, showResolution, autoResolution](const QSize &size) {
         preview->setFixedRenderSize(size);
-        QSettings().setValue("preview/fixedResolution", size);
+        QSettings().setValue(SettingsKeys::PreviewResolution, size);
         autoResolution->setEnabled(!size.isEmpty());
         showResolution(preview->renderSize());
     };
     const QSize defaultResolution(1280, 720);
-    const auto storedResolution = QSettings().value("preview/fixedResolution", defaultResolution).toSize();
+    const auto storedResolution = QSettings().value(SettingsKeys::PreviewResolution, defaultResolution).toSize();
     setRenderSize(storedResolution.width() <= 8192 && storedResolution.height() <= 8192
                       ? storedResolution : defaultResolution);
     connect(autoResolution, &QPushButton::clicked, this, [setRenderSize] { setRenderSize({}); });
@@ -723,8 +712,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     audioButton->setMenu(audioMenu);
     const auto applyAudio = [this, audioButton, audioLive, audioOff, audioFileAction](ShaderPreview::AudioMode mode, const QString &file) {
         QSettings settings;
-        settings.setValue("audio/mode", int(mode));
-        settings.setValue("audio/file", file);
+        settings.setValue(SettingsKeys::AudioMode, int(mode));
+        settings.setValue(SettingsKeys::AudioFile, file);
         (mode == ShaderPreview::AudioMode::Live ? audioLive : mode == ShaderPreview::AudioMode::Off ? audioOff : audioFileAction)->setChecked(true);
         audioButton->setText(mode == ShaderPreview::AudioMode::Live ? "Audio: Live" :
                              mode == ShaderPreview::AudioMode::Off ? "Audio: Off" : "Audio: " + QFileInfo(file).fileName());
@@ -733,11 +722,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     connect(audioLive, &QAction::triggered, this, [=] { applyAudio(ShaderPreview::AudioMode::Live, {}); });
     connect(audioOff, &QAction::triggered, this, [=] { applyAudio(ShaderPreview::AudioMode::Off, {}); });
     connect(audioFileAction, &QAction::triggered, this, [=] {
-        const auto previous = QSettings().value("audio/file").toString();
+        const auto previous = QSettings().value(SettingsKeys::AudioFile).toString();
         const auto file = QFileDialog::getOpenFileName(this, "Audio file to loop", previous,
                                                        "Audio (*.wav *.mp3 *.flac *.ogg *.m4a *.aac *.aif *.aiff);;All files (*)");
         if (file.isEmpty()) {
-            const auto mode = QSettings().value("audio/mode", 0).toInt();
+            const auto mode = QSettings().value(SettingsKeys::AudioMode, 0).toInt();
             (mode == 1 ? audioOff : mode == 2 ? audioFileAction : audioLive)->setChecked(true);
             return;
         }
@@ -745,8 +734,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     });
     {
         const QSettings settings;
-        const auto mode = ShaderPreview::AudioMode(qBound(0, settings.value("audio/mode", 0).toInt(), 2));
-        const auto file = settings.value("audio/file").toString();
+        const auto mode = ShaderPreview::AudioMode(qBound(0, settings.value(SettingsKeys::AudioMode, 0).toInt(), 2));
+        const auto file = settings.value(SettingsKeys::AudioFile).toString();
         applyAudio(mode == ShaderPreview::AudioMode::File && file.isEmpty() ? ShaderPreview::AudioMode::Live : mode, file);
     }
     transport->addWidget(playing); transport->addWidget(reset); transport->addWidget(audioButton); transport->addWidget(timeline, 1);
@@ -754,10 +743,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     previewStatus = plainLabel("Select a shader to preview.");
     previewStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     viewerLayout->addWidget(previewStatus);
-    connect(preview, &ShaderPreview::status, this, [this](const QString &status) {
-        previewStatus->setText(status == "Preview compiled" ? status : "Preview error · See Diagnostics");
+    connect(preview, &ShaderPreview::status, this, [this](const QString &status, bool compiled) {
+        previewStatus->setText(compiled ? status : "Preview error · See Diagnostics");
         if (active.isEmpty() || editor->document()->isModified() || vertexEditor->document()->isModified()) return;
-        if (status == "Preview compiled") {
+        if (compiled) {
             if (previewErrors.remove(active)) refresh();
         } else if (previewErrors.value(active) != status) {
             // The errored shader leaves the current filter; park the keyboard cursor on the
@@ -1031,8 +1020,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
                         }
                     }
                 }
-                if (!passes && column == 1 && !QStringList{"event", "bool", "long", "float", "point2D",
-                        "point3D", "floatRange", "color", "image", "audio", "audioFFT"}.contains(input)) {
+                if (!passes && column == 1 && !ISFScanner::inputTypes().contains(input)) {
                     syncTable();
                     return;
                 }
@@ -1138,7 +1126,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         QString from, to;
     };
     const auto suggestedFix = [this, compiler]() -> std::optional<GlslFix> {
-        if (compiler->stage != "Fragment shader" || compiler->file != active || compiler->line <= 0 ||
+        if (compiler->stage != DiagnosticStage::Fragment || compiler->file != active || compiler->line <= 0 ||
             editor->toPlainText() != previewedSource)
             return {};
         const auto log = compiler->log.toLower();
@@ -1175,7 +1163,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         const auto fixes = invalid ? ISFScanner::trailingCommaFix(bytes) : QList<qsizetype>{};
         const bool showCompiler = !invalid && !active.isEmpty() && compiler->shader == active && !compiler->stage.isEmpty();
         inspector->setTabText(diagnosticTab, invalid || showCompiler ? "Diagnostics (1)" : "Diagnostics");
-        const bool warning = showCompiler && compiler->stage == "Material warning";
+        const bool warning = showCompiler && compiler->stage == DiagnosticStage::MaterialWarning;
         inspector->tabBar()->setTabTextColor(diagnosticTab, warning ? QColor("#e6bd8d") :
                                              invalid || showCompiler ? QColor("#f17979") : QColor{});
         const bool hasError = (invalid && (material || ISFScanner::headerStart(bytes) >= 0)) ||
@@ -1230,12 +1218,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         *compiler = {stage, file, log, active, line};
         updateDiagnostics();
     });
-    connect(preview, &ShaderPreview::status, diagnostics, [=](const QString &status) {
-        if (status == "Preview compiled") {
-            if (compiler->stage != "Material warning") *compiler = {};
-        } else if (compiler->stage.isEmpty() || compiler->stage == "Preview error" ||
-                   compiler->stage == "Material warning") {
-            *compiler = {"Preview error", active, status, active, 0};
+    connect(preview, &ShaderPreview::status, diagnostics, [=](const QString &status, bool compiled) {
+        if (compiled) {
+            if (compiler->stage != DiagnosticStage::MaterialWarning) *compiler = {};
+        } else if (compiler->stage.isEmpty() || compiler->stage == DiagnosticStage::PreviewError ||
+                   compiler->stage == DiagnosticStage::MaterialWarning) {
+            *compiler = {DiagnosticStage::PreviewError, active, status, active, 0};
         }
         updateDiagnostics();
     });
@@ -1366,29 +1354,29 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     connect(search, &QLineEdit::textChanged, this, &MainWindow::refresh);
     controls({});
     const QSettings session;
-    folder = session.value("mediaBin/lastFolder", folder).toString();
-    const auto savedEntries = session.value("mediaBin/entries").toMap();
+    folder = session.value(SettingsKeys::BinLastFolder, folder).toString();
+    const auto savedEntries = session.value(SettingsKeys::BinEntries).toMap();
     for (auto it = savedEntries.cbegin(); it != savedEntries.cend(); ++it) {
         if (const auto entry = readShader(it.key())) {
             entries.insert(it.key(), *entry);
             entryGroups.insert(it.key(), it.value().toString());
         }
     }
-    const auto disabledTypes = session.value("mediaBin/disabledTypes").toStringList();
+    const auto disabledTypes = session.value(SettingsKeys::BinDisabledTypes).toStringList();
     for (auto *tab : typeTabs) {
         const QSignalBlocker blocker(tab);
         tab->setChecked(!disabledTypes.contains(tab->objectName()));
     }
-    const auto disabledCategories = session.value("mediaBin/disabledCategories").toStringList();
+    const auto disabledCategories = session.value(SettingsKeys::BinDisabledCategories).toStringList();
     uncheckedCategories = QSet<QString>(disabledCategories.cbegin(), disabledCategories.cend());
     {
         const QSignalBlocker blocker(search);
-        search->setText(session.value("mediaBin/nameFilter").toString());
+        search->setText(session.value(SettingsKeys::BinNameFilter).toString());
     }
     refresh();
-    const auto selectedPath = session.value("mediaBin/active").toString();
+    const auto selectedPath = session.value(SettingsKeys::BinActive).toString();
     if (auto *row = rows.value(selectedPath); row && !row->isHidden()) tree->setCurrentItem(row);
-    if (!restoreGeometry(QSettings().value("mainWindow/geometry").toByteArray())) {
+    if (!restoreGeometry(QSettings().value(SettingsKeys::WindowGeometry).toByteArray())) {
         if (const auto *display = screen()) {
             const auto available = display->availableGeometry();
             resize(available.width(), qMax(1, available.height() - 36));
@@ -1419,19 +1407,19 @@ void MainWindow::closeEvent(QCloseEvent *event) {
         return;
     }
     QSettings settings;
-    settings.setValue("mainWindow/geometry", saveGeometry());
+    settings.setValue(SettingsKeys::WindowGeometry, saveGeometry());
     QVariantMap savedEntries;
     for (auto it = entryGroups.cbegin(); it != entryGroups.cend(); ++it)
         savedEntries.insert(it.key(), it.value());
-    settings.setValue("mediaBin/entries", savedEntries);
-    settings.setValue("mediaBin/lastFolder", folder);
-    settings.setValue("mediaBin/active", active);
+    settings.setValue(SettingsKeys::BinEntries, savedEntries);
+    settings.setValue(SettingsKeys::BinLastFolder, folder);
+    settings.setValue(SettingsKeys::BinActive, active);
     QStringList disabledTypes;
     for (const auto *tab : typeTabs)
         if (!tab->isChecked()) disabledTypes << tab->objectName();
-    settings.setValue("mediaBin/disabledTypes", disabledTypes);
-    settings.setValue("mediaBin/disabledCategories", QStringList(uncheckedCategories.values()));
-    settings.setValue("mediaBin/nameFilter", search->text());
+    settings.setValue(SettingsKeys::BinDisabledTypes, disabledTypes);
+    settings.setValue(SettingsKeys::BinDisabledCategories, QStringList(uncheckedCategories.values()));
+    settings.setValue(SettingsKeys::BinNameFilter, search->text());
     event->accept();
 }
 
@@ -1442,7 +1430,7 @@ void MainWindow::importPaths(const QStringList &paths, bool autoPreview) {
         if (info.isDir()) {
             folder = info.absoluteFilePath();
             addFiles(shaderFiles(folder), folder);
-        } else if (QStringList{"fs", "isf"}.contains(info.suffix(), Qt::CaseInsensitive)) {
+        } else if (ISFScanner::isShaderFile(path)) {
             files << path;
         }
     }
@@ -1596,14 +1584,7 @@ void MainWindow::refresh() {
         const auto kind = binType(entry);
         item->setData(0, AppStyle::KindRole, int(kind));
         item->setData(1, AppStyle::KindRole, int(kind));
-        switch (kind) {
-        case ISFType::Generator: item->setText(1, "GEN"); break;
-        case ISFType::FX: item->setText(1, "FX"); break;
-        case ISFType::Transition: item->setText(1, "TRANS"); break;
-        case ISFType::NonISF: item->setText(1, "NON-ISF"); break;
-        case ISFType::MadMapper: item->setText(1, "MAD"); break;
-        default: item->setText(1, "ERR"); break;
-        }
+        item->setText(1, shaderTypeInfo(kind).badge);
         item->setToolTip(1, previewErrors.value(entry.path, ISFScanner::typeToString(kind)));
         item->setToolTip(0, entry.path + (entry.header ? "\n" + ISFScanner::categories(*entry.header).join(", ") : QString()));
         const bool shown = matches(entry);
@@ -1619,9 +1600,7 @@ void MainWindow::refresh() {
     for (auto it = typeCounts.cbegin(); it != typeCounts.cend(); ++it) {
         const auto kind = it.key();
         const int shown = shownByType.value(kind), total = totalByType.value(kind);
-        const auto caption = kind == ISFType::Generator ? "Gen" : kind == ISFType::FX ? "FX" :
-            kind == ISFType::Transition ? "Trans" : kind == ISFType::Unknown ? "ERR" :
-            kind == ISFType::MadMapper ? "MadMapper" : "Non-ISF";
+        const auto &caption = shaderTypeInfo(kind).caption;
         it.value()->setText(QString("●  %1 %2").arg(shown == total ? QString::number(total) :
                             QString("%1/%2").arg(shown).arg(total)).arg(caption));
         it.value()->setToolTip(QString("%1 visible · %2 total").arg(shown).arg(total));
@@ -1700,9 +1679,7 @@ bool MainWindow::save() {
     };
     if (saveFragment) {
         if (!write(active, source)) return false;
-        entry.source = source;
-        entry.header = header;
-        entry.madMapper = ISFScanner::isMadMapperMaterial(source);
+        entry.setSource(source);
         editor->document()->setModified(false);
     }
     if (saveVertex) {
@@ -1720,11 +1697,10 @@ bool MainWindow::save() {
 void MainWindow::writeHeader(const QJsonObject &header) {
     const auto source = editor->toPlainText();
     const auto bytes = source.toUtf8();
-    const auto startByte = ISFScanner::headerStart(bytes);
-    if (startByte < 0) return;
-    const auto start = QString::fromUtf8(bytes.left(startByte)).size();
-    const auto end = source.indexOf("*/", start + 2);
-    if (end < 0) return;
+    const auto range = ISFScanner::headerRange(bytes);
+    if (!range.isValid()) return;
+    const auto start = QString::fromUtf8(bytes.left(range.start)).size();
+    const auto end = start + QString::fromUtf8(bytes.mid(range.start, range.end - range.start)).size();
     auto json = QString::fromUtf8(QJsonDocument(header).toJson(QJsonDocument::Indented));
     json.replace("*/", "*\\/");
     QTextCursor cursor(editor->document());
@@ -2049,10 +2025,10 @@ void MainWindow::controls(const QJsonObject &header) {
             if (!z && name.compare("mouse", Qt::CaseInsensitive) == 0) {
                 auto *trackMouse = new QCheckBox("Use mouse in preview");
                 trackMouse->setToolTip("Drive this input by moving the pointer over the rendered image.");
-                trackMouse->setChecked(QSettings().value("preview/trackMouse", false).toBool());
+                trackMouse->setChecked(QSettings().value(SettingsKeys::PreviewTrackMouse, false).toBool());
                 preview->setMouseTracking(trackMouse->isChecked());
                 connect(trackMouse, &QCheckBox::toggled, row, [this](bool enabled) {
-                    QSettings().setValue("preview/trackMouse", enabled);
+                    QSettings().setValue(SettingsKeys::PreviewTrackMouse, enabled);
                     preview->setMouseTracking(enabled);
                 });
                 connect(preview, &ShaderPreview::renderPointerMoved, row,
@@ -2074,7 +2050,7 @@ void MainWindow::controls(const QJsonObject &header) {
         } else if (kind == "color") {
             const auto rgba = value.toArray();
             auto *picker = new ColorPicker;
-            picker->setSettingsKey("preview/colorPicker");
+            picker->setSettingsKey(SettingsKeys::PreviewColorPicker);
             const auto applyColor = [this, name](const QColor &color) {
                 preview->setValue(name, QVariant::fromValue(QVector4D(color.redF(), color.greenF(), color.blueF(), color.alphaF())));
             };
@@ -2118,7 +2094,7 @@ void MainWindow::controls(const QJsonObject &header) {
                 sourceStatus->setText("Image: " + QFileInfo(path).fileName());
             });
             connect(chooseShader, &QPushButton::clicked, this, [=] {
-                const auto path = QFileDialog::getOpenFileName(this, "Choose ISF generator", folder, filter);
+                const auto path = QFileDialog::getOpenFileName(this, "Choose ISF generator", folder, ISFScanner::shaderFileFilter());
                 if (path.isEmpty()) return;
                 const auto shader = readShader(path);
                 if (!shader || !shader->header || shader->type() != ISFType::Generator) {
@@ -2236,7 +2212,7 @@ void MainWindow::controls(const QJsonObject &header) {
     }
     const bool hasDefaults = std::any_of(inputs.begin(), inputs.end(), [](const QJsonValue &entry) {
         const auto type = entry.toObject().value("TYPE").toString();
-        return QStringList{"float", "long", "bool", "point2D", "point3D", "floatRange", "color"}.contains(type);
+        return ISFScanner::defaultableInputTypes().contains(type);
     });
     auto *saveDefaults = new QPushButton("Save as Default");
     saveDefaults->setEnabled(hasDefaults);
@@ -2378,7 +2354,7 @@ void MainWindow::actOnShaders(const QStringList &paths, FileAction action) {
                 QString created;
                 if (!trash) {
                     if (!copy && QFileInfo(path).absolutePath() == destination) return QString();
-                    const ShaderEntry entry{path, bytes, ISFScanner::header(bytes)};
+                    const auto entry = ShaderEntry::fromSource(path, bytes);
                     const auto error = copyShaderToFolder(entry, destination, created);
                     if (!error.isEmpty()) return error;
                 }
@@ -2610,8 +2586,7 @@ void MainWindow::repairErrors(const QStringList &paths) {
             failures << path + ": " + file.errorString();
             continue;
         }
-        entry.source = source;
-        entry.header = header;
+        entry.setSource(source);
         previewErrors.remove(path);
         reloadActive |= active == path;
         ++repaired;

@@ -1,38 +1,38 @@
-#include <algorithm>
+#include "ISFScanner.h"
 #include <QDir>
 #include <QFileInfo>
-#include "ISFScanner.h"
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QRegularExpression>
+#include <algorithm>
 
-std::optional<QJsonObject> ISFScanner::header(const QByteArray &source, HeaderError *error) {
+namespace ISFScanner {
+
+std::optional<QJsonObject> header(const QByteArray &source, HeaderError *error) {
     if (error) *error = {};
     const auto fail = [error](const QString &message, qsizetype offset) -> std::optional<QJsonObject> {
         if (error) *error = {message, offset};
         return std::nullopt;
     };
-    const auto start = headerStart(source);
-    if (start < 0) return fail("No ISF JSON header found.", 0);
-    const auto end = source.indexOf("*/", start + 2);
-    if (end < 0) return fail("The ISF header comment is missing */.", start);
+    const auto range = headerRange(source);
+    if (range.start < 0) return fail("No ISF JSON header found.", 0);
+    if (!range.isValid()) return fail("The ISF header comment is missing */.", range.start);
     QJsonParseError parseError;
-    const auto doc = QJsonDocument::fromJson(source.mid(start + 2, end - start - 2), &parseError);
+    const auto doc = QJsonDocument::fromJson(source.mid(range.jsonStart(), range.jsonLength()), &parseError);
     if (parseError.error != QJsonParseError::NoError)
-        return fail(parseError.errorString(), qBound(start + 2, start + 2 + parseError.offset, end));
-    if (!doc.isObject()) return fail("The ISF header must be a JSON object.", start + 2);
+        return fail(parseError.errorString(),
+                    qBound(range.jsonStart(), range.jsonStart() + parseError.offset, range.end));
+    if (!doc.isObject()) return fail("The ISF header must be a JSON object.", range.jsonStart());
     const auto object = doc.object();
     if (object.contains("INPUTS") && !object.value("INPUTS").isArray())
-        return fail("INPUTS must be an array.", start + 2);
+        return fail("INPUTS must be an array.", range.jsonStart());
     return object;
 }
 
-QList<qsizetype> ISFScanner::trailingCommaFix(const QByteArray &source) {
-    const auto start = headerStart(source);
-    if (start < 0) return {};
-    const auto end = source.indexOf("*/", start + 2);
-    if (end < 0) return {};
-    const auto text = QString::fromUtf8(source.mid(start + 2, end - start - 2));
+QList<qsizetype> trailingCommaFix(const QByteArray &source) {
+    const auto range = headerRange(source);
+    if (!range.isValid()) return {};
+    const auto text = QString::fromUtf8(source.mid(range.jsonStart(), range.jsonLength()));
     static const QRegularExpression tokens(R"rx("(?:\\.|[^"\\])*"|,(?=[ \t\r\n]*[}\]]))rx");
     QList<qsizetype> positions;
     auto matches = tokens.globalMatch(text);
@@ -42,7 +42,7 @@ QList<qsizetype> ISFScanner::trailingCommaFix(const QByteArray &source) {
         auto previous = match.capturedStart() - 1;
         while (previous >= 0 && text.at(previous).isSpace()) --previous;
         if (previous < 0 || QStringView(u"{[,:").contains(text.at(previous))) continue;
-        positions.append(start + 2 + text.left(match.capturedStart()).toUtf8().size());
+        positions.append(range.jsonStart() + text.left(match.capturedStart()).toUtf8().size());
     }
     if (positions.isEmpty()) return {};
     auto repaired = source;
@@ -50,7 +50,7 @@ QList<qsizetype> ISFScanner::trailingCommaFix(const QByteArray &source) {
     return header(repaired) ? positions : QList<qsizetype>{};
 }
 
-qsizetype ISFScanner::headerStart(const QByteArray &source) {
+qsizetype headerStart(const QByteArray &source) {
     qsizetype offset = source.startsWith("\xef\xbb\xbf") ? 3 : 0;
     const auto skipSpace = [&] {
         while (offset < source.size() && QByteArrayView(" \t\r\n\f\v").contains(source.at(offset))) ++offset;
@@ -76,13 +76,19 @@ qsizetype ISFScanner::headerStart(const QByteArray &source) {
     return -1;
 }
 
-std::optional<QJsonObject> ISFScanner::materialHeader(const QByteArray &source) {
+HeaderRange headerRange(const QByteArray &source) {
+    HeaderRange range;
+    range.start = headerStart(source);
+    if (range.start >= 0) range.end = source.indexOf("*/", range.start + 2);
+    return range;
+}
+
+std::optional<QJsonObject> materialHeader(const QByteArray &source) {
     auto metadata = header(source);
     if (!metadata) {
-        const auto start = headerStart(source);
-        const auto end = start < 0 ? -1 : source.indexOf("*/", start + 2);
-        if (end < 0) return {};
-        auto json = QString::fromUtf8(source.mid(start + 2, end - start - 2));
+        const auto range = headerRange(source);
+        if (!range.isValid()) return {};
+        auto json = QString::fromUtf8(source.mid(range.jsonStart(), range.jsonLength()));
         // Preserve quoted text while accepting the comments and decimal forms
         // found in MadMapper headers. Strict ISF parsing remains separate.
         static const QRegularExpression tokens(
@@ -146,7 +152,7 @@ std::optional<QJsonObject> ISFScanner::materialHeader(const QByteArray &source) 
     return metadata;
 }
 
-bool ISFScanner::isMadMapperMaterial(const QByteArray &source) {
+bool isMadMapperMaterial(const QByteArray &source) {
     if (!source.contains("materialColorForPixel")) return false;
     static const QRegularExpression comments(R"rx(/\*[\s\S]*?\*/|//[^\r\n]*)rx");
     static const QRegularExpression entry(
@@ -156,7 +162,7 @@ bool ISFScanner::isMadMapperMaterial(const QByteArray &source) {
     return entry.match(code).hasMatch();
 }
 
-ISFType ISFScanner::classify(const QJsonObject &header) {
+ISFType classify(const QJsonObject &header) {
     bool input = false, start = false, end = false, progress = false;
     for (const auto &value : header.value("INPUTS").toArray()) {
         const auto entry = value.toObject();
@@ -171,7 +177,7 @@ ISFType ISFScanner::classify(const QJsonObject &header) {
     return input ? ISFType::FX : ISFType::Generator;
 }
 
-QStringList ISFScanner::categories(const QJsonObject &header) {
+QStringList categories(const QJsonObject &header) {
     QStringList result;
     for (const auto &value : header.value("CATEGORIES").toArray()) {
         const auto name = value.toString().trimmed();
@@ -180,7 +186,7 @@ QStringList ISFScanner::categories(const QJsonObject &header) {
     return result;
 }
 
-QString ISFScanner::typeToString(ISFType type) {
+QString typeToString(ISFType type) {
     switch (type) {
     case ISFType::Generator: return "Generator";
     case ISFType::FX: return "FX";
@@ -191,7 +197,7 @@ QString ISFScanner::typeToString(ISFType type) {
     }
 }
 
-QString ISFScanner::typeFolder(ISFType type) {
+QString typeFolder(ISFType type) {
     switch (type) {
     case ISFType::Generator: return "Generators";
     case ISFType::FX: return "FX";
@@ -200,7 +206,7 @@ QString ISFScanner::typeFolder(ISFType type) {
     }
 }
 
-QString ISFScanner::companionVertexPath(const QString &shaderPath) {
+QString companionVertexPath(const QString &shaderPath) {
     if (shaderPath.isEmpty()) return {};
     const QFileInfo shader(shaderPath);
     const auto stem = shader.completeBaseName();
@@ -215,3 +221,22 @@ QString ISFScanner::companionVertexPath(const QString &shaderPath) {
     }
     return {};
 }
+
+bool isShaderFile(const QString &path) {
+    const auto suffix = QFileInfo(path).suffix();
+    return suffix.compare("fs", Qt::CaseInsensitive) == 0 || suffix.compare("isf", Qt::CaseInsensitive) == 0;
+}
+
+QString shaderFileFilter() { return "ISF shaders (*.fs *.isf *.FS *.ISF)"; }
+
+const QStringList &inputTypes() {
+    static const QStringList types{"event", "bool", "long", "float", "point2D", "point3D",
+                                   "floatRange", "color", "image", "audio", "audioFFT"};
+    return types;
+}
+
+const QStringList &defaultableInputTypes() {
+    static const QStringList types{"float", "long", "bool", "point2D", "point3D", "floatRange", "color"};
+    return types;
+}
+} // namespace ISFScanner

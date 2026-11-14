@@ -18,6 +18,17 @@ class QOpenGLShaderProgram;
 class QOpenGLTexture;
 class QOpenGLFramebufferObject;
 
+// Stage names carried by ShaderEngine::glslDiagnostic. The UI compares against these, never literals.
+namespace DiagnosticStage {
+inline const QString Vertex = QStringLiteral("Vertex shader");
+inline const QString Fragment = QStringLiteral("Fragment shader");
+inline const QString Linking = QStringLiteral("Shader linking");
+inline const QString MaterialInclude = QStringLiteral("Material include");
+inline const QString MaterialVertexInclude = QStringLiteral("Material vertex include");
+inline const QString MaterialWarning = QStringLiteral("Material warning");
+inline const QString PreviewError = QStringLiteral("Preview error"); // set by the UI from a status message
+}
+
 class ShaderEngine : public QObject, protected QOpenGLFunctions {
     Q_OBJECT
 public:
@@ -50,7 +61,8 @@ public:
     void setShaderInput(const QString &name, const QByteArray &source, const QJsonObject &header, const QString &path);
     void setImage(const QString &name, const QImage &image);
 signals:
-    void status(const QString &message);
+    // compiled is true when the preview renders; otherwise message explains why it does not.
+    void status(const QString &message, bool compiled);
     void glslDiagnostic(const QString &stage, const QString &file, const QString &log, int line);
     void inputStatus(const QString &message);
     void testCardActiveChanged(bool active);
@@ -60,6 +72,8 @@ private:
     struct ShaderInput;
     void renderShaderInputs(GLuint framebuffer, const QSize &viewportSize);
     void compile();
+    void reportCompiled();
+    void reportError(const QString &message);
     void updateVideoInput(GLuint framebuffer);
     QByteArray source;
     QJsonObject header;

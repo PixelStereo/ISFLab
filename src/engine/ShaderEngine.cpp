@@ -76,6 +76,9 @@ struct ShaderEngine::ShaderInput {
     }
 };
 
+void ShaderEngine::reportCompiled() { emit status(QStringLiteral("Preview compiled"), true); }
+void ShaderEngine::reportError(const QString &message) { emit status(message, false); }
+
 ShaderEngine::ShaderEngine() { clock.start(); materialClock.start(); }
 ShaderEngine::~ShaderEngine() = default;
 
@@ -166,7 +169,7 @@ void ShaderEngine::setFixedRenderSize(const QSize &size) {
     if (fixedRenderSize == size) return;
     fixedRenderSize = size;
     resetHistory = true;
-    if (fixedOutputError && program) emit status("Preview compiled");
+    if (fixedOutputError && program) reportCompiled();
     fixedOutputError = false;
 }
 
@@ -560,7 +563,7 @@ void ShaderEngine::compile() {
     auto passes = header.value("PASSES").toArray();
     if (passes.isEmpty()) passes.append(QJsonObject{});
     if (passes.size() > 16) {
-        emit status("Preview supports up to 16 passes.");
+        reportError("Preview supports up to 16 passes.");
         return;
     }
     const auto *context = QOpenGLContext::currentContext();
@@ -625,7 +628,7 @@ varying vec2 isf_FragNormCoord;
             const auto name = generator.value("NAME").toString();
             const auto type = generator.value("TYPE").toString();
             if ((type != "time_base" && type != "animator" && type != "incrementer" && type != "multiplier" && type != "pass_thru") || !identifier.match(name).hasMatch() || types.contains(name)) {
-                emit status(QString("Unsupported Material generator: %1 (%2)").arg(name, type));
+                reportError(QString("Unsupported Material generator: %1 (%2)").arg(name, type));
                 return;
             }
             add(name, "float");
@@ -649,7 +652,7 @@ varying vec2 isf_FragNormCoord;
     };
     for (const auto &name : generators.keys()) {
         if (!orderGenerator(orderGenerator, name)) {
-            emit status("Circular Material generator dependency: " + name);
+            reportError("Circular Material generator dependency: " + name);
             return;
         }
     }
@@ -664,7 +667,7 @@ varying vec2 isf_FragNormCoord;
             image.load(materialResourceRoot + "noiseLUT.png");
         if (image.isNull()) {
             if (!material) {
-                emit status("Missing imported image: " + relative);
+                reportError("Missing imported image: " + relative);
                 return;
             }
             missingImages << QString("%1 (%2)").arg(relative, it.key());
@@ -686,7 +689,7 @@ varying vec2 isf_FragNormCoord;
         };
         if (target.isEmpty() != (i == passes.size() - 1) ||
             (!target.isEmpty() && (!identifier.match(target).hasMatch() || types.contains(target)))) {
-            emit status("Preview requires unique pass targets and a final output pass.");
+            reportError("Preview requires unique pass targets and a final output pass.");
             return;
         }
         renderPasses.push_back({target, flag("PERSISTENT"), flag("FLOAT"),
@@ -696,7 +699,7 @@ varying vec2 isf_FragNormCoord;
     const auto start = ISFScanner::headerStart(source);
     const auto end = start < 0 ? -1 : source.indexOf("*/", start + 2);
     if (end < 0) {
-        emit status("Invalid ISF JSON header.");
+        reportError("Invalid ISF JSON header.");
         return;
     }
     const auto body = source.mid(end + 2);
@@ -739,12 +742,12 @@ void isf_vertShaderInit() {
     } else {
         QFile vertexFile(vertexPath);
         if (!vertexFile.open(QIODevice::ReadOnly)) {
-            emit status("Cannot read vertex shader: " + vertexPath);
+            reportError("Cannot read vertex shader: " + vertexPath);
             return;
         }
         auto vertexSource = vertexFile.readAll();
         if (vertexFile.error() != QFile::NoError) {
-            emit status("Cannot read vertex shader: " + vertexPath);
+            reportError("Cannot read vertex shader: " + vertexPath);
             return;
         }
         if (vertexSource.startsWith("\xef\xbb\xbf")) vertexSource.remove(0, 3);
@@ -754,8 +757,8 @@ void isf_vertShaderInit() {
             vertexBody = QString::fromUtf8(expandMaterialIncludes(vertexSource, vertexPath, 1, 0,
                                                                   vertexIncludes, error));
             if (!error.isEmpty()) {
-                emit glslDiagnostic("Material vertex include", vertexPath, error, 0);
-                emit status(error);
+                emit glslDiagnostic(DiagnosticStage::MaterialVertexInclude, vertexPath, error, 0);
+                reportError(error);
                 return;
             }
             static const QRegularExpression output(
@@ -773,8 +776,8 @@ void isf_vertShaderInit() {
         QString error;
         fragmentBody = expandMaterialIncludes(body, path, fragmentStartLine, 0, includeFiles, error);
         if (!error.isEmpty()) {
-            emit glslDiagnostic("Material include", path, error, 0);
-            emit status(error);
+            emit glslDiagnostic(DiagnosticStage::MaterialInclude, path, error, 0);
+            reportError(error);
             return;
         }
         static const QRegularExpression input(
@@ -808,7 +811,7 @@ void isf_vertShaderInit() {
             if (match.hasMatch()) {
                 const int sourceId = match.captured(1).toInt();
                 if (sourceId == 0) line = match.captured(match.capturedLength(2) ? 2 : 3).toInt();
-                else if (const auto &files = stage == "Vertex shader" ? vertexIncludes : includeFiles;
+                else if (const auto &files = stage == DiagnosticStage::Vertex ? vertexIncludes : includeFiles;
                          material && sourceId < files.size()) {
                     diagnosticFile = files.at(sourceId);
                     line = match.captured(match.capturedLength(2) ? 2 : 3).toInt();
@@ -816,24 +819,24 @@ void isf_vertShaderInit() {
             }
         }
         emit glslDiagnostic(stage, diagnosticFile, log, line);
-        emit status(stage + " failed" + (log.isEmpty() ? "." : ": " + log));
+        reportError(stage + " failed" + (log.isEmpty() ? "." : ": " + log));
     };
     if (!candidate->addShaderFromSourceCode(QOpenGLShader::Vertex, vert)) {
-        reportCompilerError("Vertex shader", vertexPath, !vertexPath.isEmpty());
+        reportCompilerError(DiagnosticStage::Vertex, vertexPath, !vertexPath.isEmpty());
         return;
     }
     if (!candidate->addShaderFromSourceCode(QOpenGLShader::Fragment, frag)) {
-        reportCompilerError("Fragment shader", path, true);
+        reportCompilerError(DiagnosticStage::Fragment, path, true);
         return;
     }
     if (!candidate->link()) {
-        reportCompilerError("Shader linking", {}, false);
+        reportCompilerError(DiagnosticStage::Linking, {}, false);
         return;
     }
     program = std::move(candidate);
-    emit status("Preview compiled");
+    reportCompiled();
     if (!missingImages.isEmpty())
-        emit glslDiagnostic("Material warning", path,
+        emit glslDiagnostic(DiagnosticStage::MaterialWarning, path,
             "Preview uses substitute textures. Restore these files for the original appearance:\n" +
             missingImages.join('\n'), 0);
 }
@@ -886,7 +889,7 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
     const auto rejectBuffers = [&](const QString &message) {
         if (bufferError == message) return;
         bufferError = message;
-        emit status(message);
+        reportError(message);
     };
     if (!fixedRenderSize.isEmpty() && (size.width() > textureLimit || size.height() > textureLimit)) {
         rejectBuffers("Fixed resolution exceeds the GPU texture limit.");
@@ -913,7 +916,7 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
     }
     if (!bufferError.isEmpty()) {
         bufferError.clear();
-        emit status("Preview compiled");
+        reportCompiled();
     }
     if (fixedOutput && (fixedRenderSize.isEmpty() || fixedOutput->size() != size)) fixedOutput.reset();
     // Release all obsolete buffers before allocating replacements.
@@ -932,10 +935,10 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
         if (!fixedOutput || !fixedOutput->isValid()) {
             fixedOutput.reset();
             fixedOutputError = true;
-            emit status("Fixed resolution unavailable. Try a smaller size or switch to Auto.");
+            reportError("Fixed resolution unavailable. Try a smaller size or switch to Auto.");
             return;
         }
-        emit status("Preview compiled");
+        reportCompiled();
     }
 
     if (imagesDirty) {
@@ -945,7 +948,7 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
         glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &limit);
         if (std::count(types.cbegin(), types.cend(), QString("sampler2D")) > limit) {
             program.reset();
-            emit status("Too many textures for this GPU.");
+            reportError("Too many textures for this GPU.");
             return;
         }
         for (auto it = types.cbegin(); it != types.cend(); ++it) {
@@ -1149,7 +1152,7 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
                     buffer.write.reset();
                 }
                 program.reset();
-                emit status("Could not allocate preview pass buffers.");
+                reportError("Could not allocate preview pass buffers.");
                 return;
             }
             clearBuffer(*pass.read);

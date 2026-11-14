@@ -50,6 +50,8 @@ qt_add_resources(ISFLabEngine madmapper PREFIX "/madmapper" BASE "third_party/ma
 qt_add_executable(ISFLab WIN32 MACOSX_BUNDLE
     src/app/main.cpp
     src/app/AppStyle.h src/app/AppStyle.cpp
+    src/app/SettingsKeys.h
+    src/app/ShaderTypes.h src/app/ShaderTypes.cpp
     src/app/MainWindow.h src/app/MainWindow.cpp
     src/app/ShaderPreview.h src/app/ShaderPreview.cpp
     src/app/SliderField.h src/app/SliderField.cpp

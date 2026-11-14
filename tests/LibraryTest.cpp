@@ -24,7 +24,7 @@ void write(const QString &path, const QByteArray &bytes) {
 
 int main() {
     const QByteArray material = "/*{ invalid material metadata }*/\nvec4 materialColorForPixel(vec2 uv) { return vec4(uv, 0., 1.); }";
-    require(ShaderEntry{"material.fs", material, ISFScanner::header(material)}.type() == ISFType::MadMapper,
+    require(ShaderEntry::fromSource("material.fs", material).type() == ISFType::MadMapper,
             "MadMapper entry point should take precedence over the ISF header");
     const auto materialOptions = ISFScanner::materialHeader(R"(/*{"INPUTS":[
         {"TYPE":"long","NAME":"shape","VALUES":["In","Out","Smooth"],"DEFAULT":"Smooth"},
@@ -37,11 +37,11 @@ int main() {
     require(!ISFScanner::isMadMapperMaterial("// vec4 materialColorForPixel(vec2 uv) {}\nvoid main() {}"),
             "Commented examples should not classify a shader as a Material");
 
-    require(ShaderEntry{"plain.fs", "/* GLSL comment */ void main() {}", {}}.type() == ISFType::NonISF,
+    require(ShaderEntry::fromSource("plain.fs", "/* GLSL comment */ void main() {}").type() == ISFType::NonISF,
             "Plain fragment should be classified separately");
-    require(ShaderEntry{"broken.fs", "/* { \"INPUTS\": } */", {}}.type() == ISFType::Unknown,
+    require(ShaderEntry::fromSource("broken.fs", "/* { \"INPUTS\": } */").type() == ISFType::Unknown,
             "Malformed metadata should be reported as an error");
-    require(ShaderEntry{"broken.isf", "void main() {}", {}}.type() == ISFType::Unknown,
+    require(ShaderEntry::fromSource("broken.isf", "void main() {}").type() == ISFType::Unknown,
             "Explicit ISF with no header should be reported as an error");
 
     const QByteArray credited = "// Zebre — credit\n/* Attribution */\n/*{\"INPUTS\":[]}*/\nvoid main() {}";
@@ -88,7 +88,7 @@ void main() {})";
     QList<ShaderEntry> entries;
     for (const auto &path : paths) {
         const auto bytes = read(path);
-        entries << ShaderEntry{path, bytes, ISFScanner::header(bytes)};
+        entries << ShaderEntry::fromSource(path, bytes);
     }
     const auto report = exportShaders(entries, dir.filePath("out"));
     require(report.copied == 5 && report.skipped == 1 && report.errors.isEmpty(), "Incorrect export report");
@@ -105,8 +105,8 @@ void main() {})";
     require(header.has_value(), "Exported shader header is invalid");
     const auto path = header->value("IMPORTED").toObject().value("tex").toObject().value("PATH").toString();
     require(read(bundle + path) == "image bytes" && read(bundle + "Resource.vs") == "vertex source", "Dependency was lost");
-    const ShaderEntry original{dir.filePath("src/sub/Resource.fs"), bundled, header};
-    const ShaderEntry duplicate{bundle + "Resource.fs", bundled, header};
+    const auto original = ShaderEntry::fromSource(dir.filePath("src/sub/Resource.fs"), bundled);
+    const auto duplicate = ShaderEntry::fromSource(bundle + "Resource.fs", bundled);
     const auto fingerprint = shaderFingerprint(original);
     require(fingerprint && shaderFingerprint(duplicate) == fingerprint,
             "Identical shaders and dependency bytes should match");
