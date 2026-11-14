@@ -44,6 +44,8 @@ public:
     void setPreviewError(const QString &path, const QString &status);
     bool clearPreviewError(const QString &path);
     void clearPreviewErrors() { previewErrors.clear(); }
+    // Results of a batch check: shaders in errors move to ERR, those in passed leave it.
+    void applyCheckResults(const QMap<QString, QString> &errors, const QStringList &passed);
 
     void restoreSession(const QSettings &settings);
     void saveSession(QSettings &settings) const;
@@ -56,6 +58,7 @@ signals:
     void repairRequested(const QStringList &paths);
     void fileActionRequested(const QStringList &paths, MediaBin::FileAction action);
     void duplicatesRequested();
+    void checkRequested(const QStringList &paths);
     void clearRequested();
     void message(const QString &text);
 

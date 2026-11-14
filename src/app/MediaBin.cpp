@@ -194,7 +194,13 @@ MediaBin::MediaBin(QWidget *parent) : QWidget(parent) {
     });
     auto *duplicates = new QPushButton("Find Duplicates…");
     connect(duplicates, &QPushButton::clicked, this, &MediaBin::duplicatesRequested);
+    auto *checkAll = new QPushButton("Check All…");
+    checkAll->setToolTip("Compile every shader in the Media Bin and move those that fail to ERR.");
+    connect(checkAll, &QPushButton::clicked, this, [this] {
+        if (!entries.isEmpty()) emit checkRequested(entries.keys());
+    });
     auto *binActions = new QHBoxLayout;
+    binActions->addWidget(checkAll, 1);
     binActions->addWidget(duplicates, 1);
     binActions->addWidget(clearBin);
     left->addLayout(binActions);
@@ -236,6 +242,8 @@ void MediaBin::showContextMenu(const QPoint &position) {
         menu.addAction("Repair Selected ERR…", this, [this, paths] { emit repairRequested(paths); });
         menu.addSeparator();
     }
+    menu.addAction("Check Selected", this, [this, paths] { emit checkRequested(paths); });
+    menu.addSeparator();
     menu.addAction("Copy to Folder…", this, [this, paths] { emit fileActionRequested(paths, FileAction::Copy); });
     menu.addAction("Move to Folder…", this, [this, paths] { emit fileActionRequested(paths, FileAction::Move); });
 #ifdef Q_OS_MACOS
@@ -360,6 +368,13 @@ void MediaBin::setPreviewError(const QString &path, const QString &status) {
         const QSignalBlocker blocker(tree);
         tree->setCurrentItem(anchor, 0, QItemSelectionModel::NoUpdate);
     }
+}
+
+void MediaBin::applyCheckResults(const QMap<QString, QString> &errors, const QStringList &passed) {
+    for (const auto &path : passed) previewErrors.remove(path);
+    for (auto it = errors.cbegin(); it != errors.cend(); ++it)
+        if (entries.contains(it.key())) previewErrors.insert(it.key(), it.value());
+    refresh();
 }
 
 bool MediaBin::clearPreviewError(const QString &path) {

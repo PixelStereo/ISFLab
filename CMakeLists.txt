@@ -47,6 +47,7 @@ add_library(ISFLabEngine STATIC
     src/engine/MaterialGenerators.h src/engine/MaterialGenerators.cpp
     src/engine/MaterialSource.h src/engine/MaterialSource.cpp
     src/engine/TestPatterns.h src/engine/TestPatterns.cpp
+    src/engine/ShaderChecker.h src/engine/ShaderChecker.cpp
 )
 target_include_directories(ISFLabEngine PUBLIC src/engine src/engine/input)
 target_link_libraries(ISFLabEngine PUBLIC ISFLabCore Qt6::Gui Qt6::OpenGL)
@@ -69,6 +70,7 @@ qt_add_executable(ISFLab WIN32 MACOSX_BUNDLE
     src/app/ShaderDocument.h src/app/ShaderDocument.cpp
     src/app/SourceEditor.h src/app/SourceEditor.cpp
     src/app/FindBar.h src/app/FindBar.cpp
+    src/app/ShaderCheckWorker.h src/app/ShaderCheckWorker.cpp
     src/app/HeaderInspector.h src/app/HeaderInspector.cpp
     src/app/DiagnosticsPanel.h src/app/DiagnosticsPanel.cpp
     src/app/UiHelpers.h

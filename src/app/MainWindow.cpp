@@ -148,6 +148,7 @@ void MainWindow::connectPanels() {
     connect(bin, &MediaBin::repairRequested, actions, &LibraryActions::repairErrors);
     connect(bin, &MediaBin::fileActionRequested, actions, &LibraryActions::actOnShaders);
     connect(bin, &MediaBin::duplicatesRequested, actions, &LibraryActions::findDuplicates);
+    connect(bin, &MediaBin::checkRequested, actions, &LibraryActions::checkShaders);
     connect(bin, &MediaBin::clearRequested, this, [this] {
         if (!resolveChanges()) return;
         bin->clear();

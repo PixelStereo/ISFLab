@@ -29,6 +29,8 @@ public:
     void moveErrors();
     void repairErrors(const QStringList &paths);
     void findDuplicates();
+    // Compiles each shader offscreen and moves those that fail to ERR (and those that now pass out of it).
+    void checkShaders(const QStringList &paths);
     void actOnShaders(const QStringList &paths, MediaBin::FileAction action);
 
 private:
