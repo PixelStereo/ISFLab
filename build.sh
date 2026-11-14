@@ -37,7 +37,18 @@ cmake --build build --config "$config" --parallel
 
 if [[ "$run" == 1 ]]; then
     case "$(uname -s)" in
-        Darwin) open "$(ls -d "$PWD"/build/ISFLab*.app | head -1)" ;;
+        Darwin)
+            # The bundle carries the version and commit in its name: open the one this build produced,
+            # remove bundles left by earlier commits, and quit a previous build still running
+            # (macOS would otherwise bring that instance forward instead of launching the new one).
+            app_name="$(sed -n 's/.*"name":"\([^"]*\)".*/\1/p' build/application.json)"
+            app="$PWD/build/$app_name.app"
+            [[ -n "$app_name" && -d "$app" ]] || { echo "Built application not found: $app" >&2; exit 1; }
+            for stale in "$PWD"/build/ISFLab\ v*.app; do
+                [[ -d "$stale" && "$stale" != "$app" ]] && rm -rf "$stale"
+            done
+            pkill -f "$PWD/build/ISFLab v.*\.app/Contents/MacOS/" 2>/dev/null && sleep 1
+            open -n "$app" ;;
         MINGW*|MSYS*|CYGWIN*)
             executable="$(ls "$PWD/build/$config"/ISFLab*.exe | head -1)"
             [[ -f "$executable" ]] || executable="$(ls "$PWD"/build/ISFLab*.exe | head -1)"
