@@ -1,5 +1,6 @@
 #pragma once
 #include "LiveInput.h"
+#include "MaterialGenerators.h"
 #include <QElapsedTimer>
 #include <QHash>
 #include <QImage>
@@ -75,6 +76,11 @@ private:
     void reportCompiled();
     void reportError(const QString &message);
     void updateVideoInput(GLuint framebuffer);
+    bool createTextures();
+    void uploadAudioTextures(int textureLimit);
+    // Location of a uniform in the current program, looked up once per compile.
+    int uniform(const QByteArray &name);
+    QHash<QByteArray, int> uniformLocations;
     QByteArray source;
     QJsonObject header;
     QString path;
@@ -108,15 +114,8 @@ private:
     double time = 0;
     int frame = 0;
     bool playing = true, dirty = true, imagesDirty = true;
-    struct TimeGenerator {
-        QJsonObject parameters;
-        QString type;
-        double elapsed = 0, sampled = 0;
-    };
-    QHash<QString, TimeGenerator> generators;
-    QStringList generatorOrder;
-    QHash<QString, qint64> eventCounts;
-    bool resetGenerators = true;
+    MaterialGenerators generators;
+    QHash<QString, qint64> eventCounts; // event inputs and how many times each was triggered
     struct AudioTexture { bool spectrum; int width; };
     QHash<QString, AudioTexture> audioTextures;
     std::shared_ptr<const AudioFrame> audioFrame, uploadedAudio;

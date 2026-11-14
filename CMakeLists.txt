@@ -16,7 +16,9 @@ if(NOT DEFINED ISFLAB_TAG_VERSION AND NOT ISFLAB_RELEASE_BUILD)
         set(isflab_commit "unknown")
     endif()
     string(APPEND ISFLAB_DISPLAY_VERSION "_${isflab_commit}")
-    foreach(isflab_ref HEAD packed-refs)
+    execute_process(COMMAND git symbolic-ref -q HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE isflab_branch_ref OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    foreach(isflab_ref HEAD ${isflab_branch_ref} packed-refs)
         execute_process(COMMAND git rev-parse --path-format=absolute --git-path ${isflab_ref}
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" OUTPUT_VARIABLE isflab_ref_path
             OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
@@ -39,7 +41,13 @@ add_library(ISFLabCore STATIC
 target_include_directories(ISFLabCore PUBLIC src/core)
 target_link_libraries(ISFLabCore PUBLIC Qt6::Core)
 
-add_library(ISFLabEngine STATIC src/engine/ShaderEngine.h src/engine/ShaderEngine.cpp)
+add_library(ISFLabEngine STATIC
+    src/engine/ShaderEngine.h src/engine/ShaderEngine.cpp
+    src/engine/DimensionExpression.h src/engine/DimensionExpression.cpp
+    src/engine/MaterialGenerators.h src/engine/MaterialGenerators.cpp
+    src/engine/MaterialSource.h src/engine/MaterialSource.cpp
+    src/engine/TestPatterns.h src/engine/TestPatterns.cpp
+)
 target_include_directories(ISFLabEngine PUBLIC src/engine src/engine/input)
 target_link_libraries(ISFLabEngine PUBLIC ISFLabCore Qt6::Gui Qt6::OpenGL)
 
