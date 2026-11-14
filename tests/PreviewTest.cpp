@@ -13,7 +13,11 @@ int main(int argc, char **argv) {
     preview.resize(320, 180);
     preview.setPlaying(false);
     QString status;
-    QObject::connect(&preview, &ShaderPreview::status, &app, [&](const QString &text) { status = text; });
+    bool compiled = false;
+    QObject::connect(&preview, &ShaderPreview::status, &app, [&](const QString &text, bool ok) {
+        status = text;
+        compiled = ok;
+    });
     preview.show();
     QTimer::singleShot(250, &app, [&] {
         for (const QString name : {"ColorWave", "Invert", "Crossfade"}) {
@@ -25,7 +29,7 @@ int main(int argc, char **argv) {
             if (name == "Crossfade") preview.setValue("progress", 0.5);
             if (name == "Invert") preview.setValue("amount", 1.0);
             const auto image = preview.grabFramebuffer();
-            if (status != "Preview compiled" || image.isNull()) qFatal("%s: %s", qPrintable(name), qPrintable(status));
+            if (!compiled || image.isNull()) qFatal("%s: %s", qPrintable(name), qPrintable(status));
             if (image.pixelColor(image.width() / 4, image.height() / 2) ==
                 image.pixelColor(image.width() * 3 / 4, image.height() / 2))
                 qFatal("%s did not render a spatial gradient", qPrintable(name));
@@ -45,7 +49,7 @@ int main(int argc, char **argv) {
         })glsl";
         preview.load(audio, *ISFScanner::header(audio), {});
         const auto audioImage = preview.grabFramebuffer();
-        if (status != "Preview compiled" || audioImage.isNull())
+        if (!compiled || audioImage.isNull())
             qFatal("Audio input preview failed: %s", qPrintable(status));
         const auto silence = audioImage.pixelColor(audioImage.width() / 2, audioImage.height() / 2);
         if (qAbs(silence.red() - 128) > 1 || silence.green() != 0 || qAbs(silence.blue() - 96) > 1)
@@ -84,7 +88,7 @@ int main(int argc, char **argv) {
         preview.load(material, *materialHeader, materialFixture.filePath("Material.fs"));
         preview.seek(0.5);
         const auto materialImage = preview.grabFramebuffer();
-        if (status != "Preview compiled" || materialImage.isNull())
+        if (!compiled || materialImage.isNull())
             qFatal("Material preview failed: %s", qPrintable(status));
         const auto materialPixel = materialImage.pixelColor(materialImage.width() / 2, materialImage.height() / 2);
         if (qAbs(materialPixel.red() - 64) > 2 || qAbs(materialPixel.blue() - 64) > 2)
@@ -119,7 +123,7 @@ int main(int argc, char **argv) {
             })";
         preview.load(multipass, *ISFScanner::header(multipass), {});
         const auto image = preview.grabFramebuffer();
-        if (status != "Preview compiled" || image.isNull()) qFatal("Multipass failed: %s", qPrintable(status));
+        if (!compiled || image.isNull()) qFatal("Multipass failed: %s", qPrintable(status));
         const auto pixel = image.pixelColor(image.width() / 2, image.height() / 2);
         if (qAbs(pixel.red() - 204) > 2 || qAbs(pixel.green() - 51) > 2 || qAbs(pixel.blue() - 102) > 2)
             qFatal("Multipass preview did not sample the previous pass");
@@ -159,7 +163,7 @@ int main(int argc, char **argv) {
             })glsl";
         preview.load(custom, *ISFScanner::header(custom), fixture.filePath("Shader.fs"));
         const auto customImage = preview.grabFramebuffer();
-        if (status != "Preview compiled" || customImage.isNull()) qFatal("Custom shader: %s", qPrintable(status));
+        if (!compiled || customImage.isNull()) qFatal("Custom shader: %s", qPrintable(status));
         const auto customPixel = customImage.pixelColor(customImage.width() / 2, customImage.height() / 2);
         if (qAbs(customPixel.red() - 60) > 2 || qAbs(customPixel.green() - 128) > 2 ||
             qAbs(customPixel.blue() - 191) > 2)
@@ -174,7 +178,7 @@ int main(int argc, char **argv) {
             qFatal("Oversized buffers were not rejected: %s", qPrintable(status));
         preview.setFixedRenderSize(QSize(80, 160));
         preview.grabFramebuffer();
-        if (status != "Preview compiled") qFatal("Preview did not recover after reducing the size");
+        if (!compiled) qFatal("Preview did not recover after reducing the size");
         app.quit();
     });
     return app.exec();

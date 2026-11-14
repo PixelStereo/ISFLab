@@ -1,5 +1,6 @@
 #pragma once
 #include "LiveInput.h"
+#include "MaterialGenerators.h"
 #include <QElapsedTimer>
 #include <QHash>
 #include <QImage>
@@ -17,6 +18,17 @@
 class QOpenGLShaderProgram;
 class QOpenGLTexture;
 class QOpenGLFramebufferObject;
+
+// Stage names carried by ShaderEngine::glslDiagnostic. The UI compares against these, never literals.
+namespace DiagnosticStage {
+inline const QString Vertex = QStringLiteral("Vertex shader");
+inline const QString Fragment = QStringLiteral("Fragment shader");
+inline const QString Linking = QStringLiteral("Shader linking");
+inline const QString MaterialInclude = QStringLiteral("Material include");
+inline const QString MaterialVertexInclude = QStringLiteral("Material vertex include");
+inline const QString MaterialWarning = QStringLiteral("Material warning");
+inline const QString PreviewError = QStringLiteral("Preview error"); // set by the UI from a status message
+}
 
 class ShaderEngine : public QObject, protected QOpenGLFunctions {
     Q_OBJECT
@@ -50,7 +62,8 @@ public:
     void setShaderInput(const QString &name, const QByteArray &source, const QJsonObject &header, const QString &path);
     void setImage(const QString &name, const QImage &image);
 signals:
-    void status(const QString &message);
+    // compiled is true when the preview renders; otherwise message explains why it does not.
+    void status(const QString &message, bool compiled);
     void glslDiagnostic(const QString &stage, const QString &file, const QString &log, int line);
     void inputStatus(const QString &message);
     void testCardActiveChanged(bool active);
@@ -60,7 +73,14 @@ private:
     struct ShaderInput;
     void renderShaderInputs(GLuint framebuffer, const QSize &viewportSize);
     void compile();
+    void reportCompiled();
+    void reportError(const QString &message);
     void updateVideoInput(GLuint framebuffer);
+    bool createTextures();
+    void uploadAudioTextures(int textureLimit);
+    // Location of a uniform in the current program, looked up once per compile.
+    int uniform(const QByteArray &name);
+    QHash<QByteArray, int> uniformLocations;
     QByteArray source;
     QJsonObject header;
     QString path;
@@ -94,15 +114,8 @@ private:
     double time = 0;
     int frame = 0;
     bool playing = true, dirty = true, imagesDirty = true;
-    struct TimeGenerator {
-        QJsonObject parameters;
-        QString type;
-        double elapsed = 0, sampled = 0;
-    };
-    QHash<QString, TimeGenerator> generators;
-    QStringList generatorOrder;
-    QHash<QString, qint64> eventCounts;
-    bool resetGenerators = true;
+    MaterialGenerators generators;
+    QHash<QString, qint64> eventCounts; // event inputs and how many times each was triggered
     struct AudioTexture { bool spectrum; int width; };
     QHash<QString, AudioTexture> audioTextures;
     std::shared_ptr<const AudioFrame> audioFrame, uploadedAudio;

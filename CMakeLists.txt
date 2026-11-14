@@ -16,7 +16,9 @@ if(NOT DEFINED ISFLAB_TAG_VERSION AND NOT ISFLAB_RELEASE_BUILD)
         set(isflab_commit "unknown")
     endif()
     string(APPEND ISFLAB_DISPLAY_VERSION "_${isflab_commit}")
-    foreach(isflab_ref HEAD packed-refs)
+    execute_process(COMMAND git symbolic-ref -q HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE isflab_branch_ref OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    foreach(isflab_ref HEAD ${isflab_branch_ref} packed-refs)
         execute_process(COMMAND git rev-parse --path-format=absolute --git-path ${isflab_ref}
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" OUTPUT_VARIABLE isflab_ref_path
             OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
@@ -39,7 +41,13 @@ add_library(ISFLabCore STATIC
 target_include_directories(ISFLabCore PUBLIC src/core)
 target_link_libraries(ISFLabCore PUBLIC Qt6::Core)
 
-add_library(ISFLabEngine STATIC src/engine/ShaderEngine.h src/engine/ShaderEngine.cpp)
+add_library(ISFLabEngine STATIC
+    src/engine/ShaderEngine.h src/engine/ShaderEngine.cpp
+    src/engine/DimensionExpression.h src/engine/DimensionExpression.cpp
+    src/engine/MaterialGenerators.h src/engine/MaterialGenerators.cpp
+    src/engine/MaterialSource.h src/engine/MaterialSource.cpp
+    src/engine/TestPatterns.h src/engine/TestPatterns.cpp
+)
 target_include_directories(ISFLabEngine PUBLIC src/engine src/engine/input)
 target_link_libraries(ISFLabEngine PUBLIC ISFLabCore Qt6::Gui Qt6::OpenGL)
 
@@ -50,7 +58,20 @@ qt_add_resources(ISFLabEngine madmapper PREFIX "/madmapper" BASE "third_party/ma
 qt_add_executable(ISFLab WIN32 MACOSX_BUNDLE
     src/app/main.cpp
     src/app/AppStyle.h src/app/AppStyle.cpp
+    src/app/SettingsKeys.h
+    src/app/ShaderTypes.h src/app/ShaderTypes.cpp
     src/app/MainWindow.h src/app/MainWindow.cpp
+    src/app/MediaBin.h src/app/MediaBin.cpp
+    src/app/LibraryActions.h src/app/LibraryActions.cpp
+    src/app/PreviewPanel.h src/app/PreviewPanel.cpp
+    src/app/ParameterPanel.h src/app/ParameterPanel.cpp
+    src/app/PointPad.h src/app/PointPad.cpp
+    src/app/ShaderDocument.h src/app/ShaderDocument.cpp
+    src/app/SourceEditor.h src/app/SourceEditor.cpp
+    src/app/FindBar.h src/app/FindBar.cpp
+    src/app/HeaderInspector.h src/app/HeaderInspector.cpp
+    src/app/DiagnosticsPanel.h src/app/DiagnosticsPanel.cpp
+    src/app/UiHelpers.h
     src/app/ShaderPreview.h src/app/ShaderPreview.cpp
     src/app/SliderField.h src/app/SliderField.cpp
     src/app/ColorPicker.h src/app/ColorPicker.cpp
@@ -195,6 +216,12 @@ if(BUILD_TESTING)
     target_compile_definitions(ISFLabLibraryTest PRIVATE ISFLAB_EXAMPLES="${CMAKE_CURRENT_SOURCE_DIR}/examples")
     target_link_libraries(ISFLabLibraryTest PRIVATE ISFLabCore)
     add_test(NAME library COMMAND ISFLabLibraryTest)
+    add_executable(ISFLabScannerTest tests/ScannerTest.cpp)
+    target_link_libraries(ISFLabScannerTest PRIVATE ISFLabCore)
+    add_test(NAME scanner COMMAND ISFLabScannerTest)
+    add_executable(ISFLabEngineTest tests/EngineTest.cpp)
+    target_link_libraries(ISFLabEngineTest PRIVATE ISFLabEngine)
+    add_test(NAME engine COMMAND ISFLabEngineTest)
 endif()
 
 if(BUILD_TESTING)
@@ -221,4 +248,6 @@ if(APPLE AND BUILD_TESTING AND ISFLAB_TEST_OPENGL)
     set_source_files_properties(tests/SyphonTest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_include_directories(ISFLabSyphonTest PRIVATE src/engine/input)
     target_link_libraries(ISFLabSyphonTest PRIVATE Qt6::Widgets Qt6::OpenGLWidgets isflab_syphon)
+    add_test(NAME syphon COMMAND "$<TARGET_FILE:ISFLabSyphonTest>" --automated)
+    set_tests_properties(syphon PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
 endif()

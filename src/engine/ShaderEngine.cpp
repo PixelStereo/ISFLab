@@ -1,5 +1,8 @@
 #include "ShaderEngine.h"
 #include "ISFScanner.h"
+#include "DimensionExpression.h"
+#include "MaterialSource.h"
+#include "TestPatterns.h"
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -23,46 +26,6 @@ static void initializeMaterialResources() {
     Q_INIT_RESOURCE(madmapper);
 }
 
-namespace {
-const QString materialResourceRoot = ":/madmapper/";
-
-QByteArray expandMaterialIncludes(const QByteArray &source, const QString &path, int firstLine,
-                                  int sourceId, QStringList &files, QString &error, int depth = 0) {
-    static const QRegularExpression directive(
-        R"rx(^[ \t]*#[ \t]*include[ \t]+"([^"\r\n]+)"[ \t]*(?://[^\r\n]*)?\r?$)rx");
-    QByteArray result;
-    int lineNumber = firstLine;
-    for (const auto &line : source.split('\n')) {
-        const auto match = directive.match(QString::fromUtf8(line));
-        if (!match.hasMatch()) {
-            result += line + '\n';
-        } else {
-            const auto name = match.captured(1);
-            const auto local = QFileInfo(path).dir().filePath(name);
-            static const QStringList bundledIncludes{"MadCommon.glsl", "MadNoise.glsl", "MadSDF.glsl"};
-            const auto bundled = std::find_if(bundledIncludes.cbegin(), bundledIncludes.cend(),
-                [&](const QString &candidate) { return candidate.compare(name, Qt::CaseInsensitive) == 0; });
-            const auto resource = bundled == bundledIncludes.cend() ? QString{} : materialResourceRoot + *bundled;
-            const auto includePath = QDir::isRelativePath(name) && QFileInfo(local).isFile() ? local : resource;
-            QFile file(includePath);
-            if (depth >= 16 || files.size() >= 64 || !QDir::isRelativePath(name) ||
-                !file.open(QIODevice::ReadOnly) || file.size() > 1024 * 1024) {
-                error = QString("%1:%2: cannot expand Material include \"%3\".")
-                            .arg(path).arg(lineNumber).arg(name);
-                return {};
-            }
-            files.append(includePath);
-            const int includeId = files.size() - 1;
-            result += "#line 1 " + QByteArray::number(includeId) + "\n";
-            result += expandMaterialIncludes(file.readAll(), includePath, 1, includeId, files, error, depth + 1);
-            if (!error.isEmpty()) return {};
-            result += "#line " + QByteArray::number(lineNumber + 1) + " " + QByteArray::number(sourceId) + "\n";
-        }
-        ++lineNumber;
-    }
-    return result;
-}
-} // namespace
 
 struct ShaderEngine::ShaderInput {
     ShaderEngine engine;
@@ -75,6 +38,9 @@ struct ShaderEngine::ShaderInput {
         if (initialized) engine.release();
     }
 };
+
+void ShaderEngine::reportCompiled() { emit status(QStringLiteral("Preview compiled"), true); }
+void ShaderEngine::reportError(const QString &message) { emit status(message, false); }
 
 ShaderEngine::ShaderEngine() { clock.start(); materialClock.start(); }
 ShaderEngine::~ShaderEngine() = default;
@@ -166,7 +132,7 @@ void ShaderEngine::setFixedRenderSize(const QSize &size) {
     if (fixedRenderSize == size) return;
     fixedRenderSize = size;
     resetHistory = true;
-    if (fixedOutputError && program) emit status("Preview compiled");
+    if (fixedOutputError && program) reportCompiled();
     fixedOutputError = false;
 }
 
@@ -180,7 +146,7 @@ void ShaderEngine::setFilterEnabled(bool enabled) {
 
 void ShaderEngine::seek(double value) {
     resetHistory = true;
-    resetGenerators = true;
+    generators.reset();
     videoClock.invalidate();
     time = value;
     frame = 0;
@@ -294,182 +260,6 @@ void ShaderEngine::setImage(const QString &name, const QImage &image) {
 }
 
 namespace {
-class DimensionExpression {
-public:
-    DimensionExpression(QString expression, const QHash<QString, double> &variables)
-        : expression(std::move(expression)), variables(variables) {}
-
-    double evaluate() {
-        if (expression.size() > 512) return invalid;
-        const double result = sum();
-        skipSpace();
-        return position == expression.size() ? result : invalid;
-    }
-
-private:
-    static constexpr double invalid = std::numeric_limits<double>::quiet_NaN();
-
-    void skipSpace() {
-        while (position < expression.size() && expression.at(position).isSpace()) ++position;
-    }
-
-    bool consume(QChar character) {
-        skipSpace();
-        if (position == expression.size() || expression.at(position) != character) return false;
-        ++position;
-        return true;
-    }
-
-    double sum() {
-        double result = product();
-        for (;;) {
-            if (consume('+')) result += product();
-            else if (consume('-')) result -= product();
-            else return result;
-        }
-    }
-
-    double product() {
-        double result = operand();
-        for (;;) {
-            if (consume('*')) result *= operand();
-            else if (consume('/')) result /= operand();
-            else return result;
-        }
-    }
-
-    double operand() {
-        if (consume('+')) return operand();
-        if (consume('-')) return -operand();
-        if (consume('(')) {
-            const double result = sum();
-            return consume(')') ? result : invalid;
-        }
-
-        const bool variable = consume('$');
-        static const QRegularExpression token(
-            R"rx([A-Za-z_]\w*|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)rx");
-        const auto match = token.match(expression, position, QRegularExpression::NormalMatch,
-                                       QRegularExpression::AnchorAtOffsetMatchOption);
-        if (!match.hasMatch()) return invalid;
-        position = match.capturedEnd();
-        const auto name = match.captured();
-        if (variable) return variables.value(name, invalid);
-
-        bool numeric = false;
-        const double value = name.toDouble(&numeric);
-        if (numeric) return value;
-        if (!consume('(')) return invalid;
-        const double first = sum();
-        if (name == "min" || name == "max") {
-            if (!consume(',')) return invalid;
-            const double second = sum();
-            if (!consume(')') || std::isnan(first) || std::isnan(second)) return invalid;
-            return name == "min" ? std::min(first, second) : std::max(first, second);
-        }
-        if (!consume(')')) return invalid;
-        if (name == "floor") return std::floor(first);
-        if (name == "ceil") return std::ceil(first);
-        if (name == "round") return std::round(first);
-        if (name == "abs") return std::abs(first);
-        return invalid;
-    }
-
-    QString expression;
-    const QHash<QString, double> &variables;
-    qsizetype position = 0;
-};
-
-QImage testCard(double seconds) {
-    QImage image(640, 360, QImage::Format_RGBA8888);
-    const QColor ink("#111319"), panel("#191d27"), grid("#343a48"), white("#f4f1e9");
-    const QColor accents[] = {QColor("#fa684f"), QColor("#f8cc63"), QColor("#a8dc9c"),
-                              QColor("#69d9d7"), QColor("#839bff"), QColor("#db8be6")};
-    image.fill(ink);
-    QPainter p(&image);
-    p.setRenderHint(QPainter::Antialiasing);
-
-    p.setPen(white);
-    p.setFont(QFont("Sans Serif", 13, QFont::DemiBold));
-    p.drawText(QRect(20, 12, 600, 28), Qt::AlignLeft | Qt::AlignVCenter, "ISFLAB  /  PIXEL STEREO");
-    p.drawText(QRect(230, 12, 275, 28), Qt::AlignCenter, "CHROMA  /  LUMA  /  MOTION");
-    p.drawText(QRect(510, 12, 110, 28), Qt::AlignRight | Qt::AlignVCenter,
-               QString::number(seconds, 'f', 2) + " s");
-
-    p.fillRect(QRect(20, 52, 356, 214), panel);
-    p.setPen(grid);
-    for (int x = 38; x < 376; x += 20) p.drawLine(x, 52, x, 265);
-    for (int y = 59; y < 266; y += 20) p.drawLine(20, y, 375, y);
-    const QPointF center(198, 159);
-    p.setBrush(Qt::NoBrush);
-    p.setPen(QPen(QColor("#7c869a"), 1));
-    for (int radius : {28, 54, 80}) p.drawEllipse(center, radius, radius);
-    p.drawLine(QPointF(102, 159), QPointF(294, 159));
-    p.drawLine(QPointF(198, 63), QPointF(198, 255));
-    for (int i = 0; i < 3; ++i) {
-        const double phase = seconds * (1.4 + i * 0.55) + i * 2.1;
-        const double radius = 80 - i * 26;
-        const auto dot = center + QPointF(std::cos(phase) * radius, std::sin(phase) * radius);
-        p.setBrush(i == 0 ? white : accents[i + 2]);
-        p.setPen(QPen(ink, 2));
-        p.drawEllipse(dot, 12 - i * 2, 12 - i * 2);
-    }
-
-    const QColor rgb[] = {Qt::red, Qt::green, Qt::blue};
-    for (int i = 0; i < 3; ++i) {
-        const QRect tile(388 + i * 79, 52, 74, 94);
-        p.fillRect(tile, rgb[i]);
-        p.setPen(ink);
-        p.drawText(tile.adjusted(8, 0, 0, -6), Qt::AlignLeft | Qt::AlignBottom,
-                   QString(QChar("RGB"[i])));
-    }
-
-    const QRect gradientArea(388, 156, 232, 110);
-    QLinearGradient cmyk(gradientArea.topLeft(), gradientArea.bottomRight());
-    cmyk.setColorAt(0.0, QColor::fromCmyk(255, 0, 0, 0));
-    cmyk.setColorAt(1.0 / 3.0, QColor::fromCmyk(0, 255, 0, 0));
-    cmyk.setColorAt(2.0 / 3.0, QColor::fromCmyk(0, 0, 255, 0));
-    cmyk.setColorAt(1.0, QColor::fromCmyk(0, 0, 0, 255));
-    p.fillRect(gradientArea, cmyk);
-
-    const QRect track(0, 304, image.width(), image.height() - 304);
-    p.fillRect(track, panel);
-    p.setClipRect(track);
-    const int travel = int(std::fmod(seconds * 110, 32.0));
-    for (int x = track.left() - 96 + travel; x < track.right(); x += 32) {
-        QPolygon stripe;
-        stripe << QPoint(x + 76, track.top()) << QPoint(x + 86, track.top())
-               << QPoint(x + 10, track.bottom() + 1) << QPoint(x, track.bottom() + 1);
-        p.setPen(Qt::NoPen);
-        p.setBrush(white);
-        p.drawPolygon(stripe);
-    }
-    p.setClipping(false);
-
-    for (int i = 0; i < 16; ++i) {
-        const int level = i * 255 / 15;
-        const int x = 20 + i * 600 / 16;
-        p.fillRect(x, 281, 20 + (i + 1) * 600 / 16 - x, 19, QColor(level, level, level));
-    }
-    p.end();
-    return image;
-}
-
-QImage transitionCard(bool after) {
-    QImage image(640, 360, QImage::Format_RGBA8888);
-    QPainter painter(&image);
-    QLinearGradient gradient(0, 0, image.width(), image.height());
-    gradient.setColorAt(0, QColor(after ? "#813e73" : "#294297"));
-    gradient.setColorAt(1, QColor(after ? "#e68556" : "#319fa6"));
-    painter.fillRect(image.rect(), gradient);
-    painter.setPen(QColor(255, 255, 255, 150));
-    painter.drawRect(image.rect().adjusted(18, 18, -19, -19));
-    painter.setPen(Qt::white);
-    painter.setFont(QFont("Sans Serif", 58, QFont::Bold));
-    painter.drawText(image.rect(), Qt::AlignCenter, after ? "AFTER" : "BEFORE");
-    return image;
-}
-
 QImage glImage(const QImage &image) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
     return image.convertToFormat(QImage::Format_RGBA8888).flipped(Qt::Vertical);
@@ -511,7 +301,7 @@ void ShaderEngine::updateVideoInput(GLuint framebuffer) {
         emit inputStatus(status);
         emit testCardActiveChanged(pixels.isNull());
     }
-    if (pixels.isNull()) pixels = testCard(time);
+    if (pixels.isNull()) pixels = TestPatterns::testCard(time);
     videoFrame = pixels;
     if (!filterEnabled) return;
     pixels = glImage(pixels);
@@ -526,6 +316,12 @@ void ShaderEngine::updateVideoInput(GLuint framebuffer) {
         }
         break;
     }
+}
+
+int ShaderEngine::uniform(const QByteArray &name) {
+    auto location = uniformLocations.find(name);
+    if (location == uniformLocations.end()) location = uniformLocations.insert(name, program->uniformLocation(name));
+    return location.value();
 }
 
 void ShaderEngine::initialize() {
@@ -555,12 +351,11 @@ void ShaderEngine::compile() {
     static const bool resourcesReady = [] { initializeMaterialResources(); return true; }();
     Q_UNUSED(resourcesReady);
     generators.clear();
-    generatorOrder.clear();
-    resetGenerators = true;
+    uniformLocations.clear();
     auto passes = header.value("PASSES").toArray();
     if (passes.isEmpty()) passes.append(QJsonObject{});
     if (passes.size() > 16) {
-        emit status("Preview supports up to 16 passes.");
+        reportError("Preview supports up to 16 passes.");
         return;
     }
     const auto *context = QOpenGLContext::currentContext();
@@ -624,34 +419,17 @@ varying vec2 isf_FragNormCoord;
             const auto generator = entry.toObject();
             const auto name = generator.value("NAME").toString();
             const auto type = generator.value("TYPE").toString();
-            if ((type != "time_base" && type != "animator" && type != "incrementer" && type != "multiplier" && type != "pass_thru") || !identifier.match(name).hasMatch() || types.contains(name)) {
-                emit status(QString("Unsupported Material generator: %1 (%2)").arg(name, type));
+            if (!MaterialGenerators::isSupportedType(type) || !identifier.match(name).hasMatch() || types.contains(name)) {
+                reportError(QString("Unsupported Material generator: %1 (%2)").arg(name, type));
                 return;
             }
             add(name, "float");
-            generators.insert(name, {generator.value("PARAMS").toObject(), type});
+            generators.add(name, type, generator.value("PARAMS").toObject());
         }
     }
-    QSet<QString> visiting, ordered;
-    const auto orderGenerator = [&](const auto &visit, const QString &name) -> bool {
-        if (ordered.contains(name)) return true;
-        if (visiting.contains(name)) return false;
-        visiting.insert(name);
-        const auto &parameters = generators.constFind(name)->parameters;
-        for (const auto &parameter : parameters) {
-            const auto dependency = parameter.toString();
-            if (generators.contains(dependency) && !visit(visit, dependency)) return false;
-        }
-        visiting.remove(name);
-        ordered.insert(name);
-        generatorOrder.append(name);
-        return true;
-    };
-    for (const auto &name : generators.keys()) {
-        if (!orderGenerator(orderGenerator, name)) {
-            emit status("Circular Material generator dependency: " + name);
-            return;
-        }
+    if (const auto cycle = generators.order(); !cycle.isEmpty()) {
+        reportError("Circular Material generator dependency: " + cycle);
+        return;
     }
     QStringList missingImages;
     const auto imported = header.value("IMPORTED").toObject();
@@ -664,7 +442,7 @@ varying vec2 isf_FragNormCoord;
             image.load(materialResourceRoot + "noiseLUT.png");
         if (image.isNull()) {
             if (!material) {
-                emit status("Missing imported image: " + relative);
+                reportError("Missing imported image: " + relative);
                 return;
             }
             missingImages << QString("%1 (%2)").arg(relative, it.key());
@@ -686,7 +464,7 @@ varying vec2 isf_FragNormCoord;
         };
         if (target.isEmpty() != (i == passes.size() - 1) ||
             (!target.isEmpty() && (!identifier.match(target).hasMatch() || types.contains(target)))) {
-            emit status("Preview requires unique pass targets and a final output pass.");
+            reportError("Preview requires unique pass targets and a final output pass.");
             return;
         }
         renderPasses.push_back({target, flag("PERSISTENT"), flag("FLOAT"),
@@ -696,7 +474,7 @@ varying vec2 isf_FragNormCoord;
     const auto start = ISFScanner::headerStart(source);
     const auto end = start < 0 ? -1 : source.indexOf("*/", start + 2);
     if (end < 0) {
-        emit status("Invalid ISF JSON header.");
+        reportError("Invalid ISF JSON header.");
         return;
     }
     const auto body = source.mid(end + 2);
@@ -739,12 +517,12 @@ void isf_vertShaderInit() {
     } else {
         QFile vertexFile(vertexPath);
         if (!vertexFile.open(QIODevice::ReadOnly)) {
-            emit status("Cannot read vertex shader: " + vertexPath);
+            reportError("Cannot read vertex shader: " + vertexPath);
             return;
         }
         auto vertexSource = vertexFile.readAll();
         if (vertexFile.error() != QFile::NoError) {
-            emit status("Cannot read vertex shader: " + vertexPath);
+            reportError("Cannot read vertex shader: " + vertexPath);
             return;
         }
         if (vertexSource.startsWith("\xef\xbb\xbf")) vertexSource.remove(0, 3);
@@ -754,8 +532,8 @@ void isf_vertShaderInit() {
             vertexBody = QString::fromUtf8(expandMaterialIncludes(vertexSource, vertexPath, 1, 0,
                                                                   vertexIncludes, error));
             if (!error.isEmpty()) {
-                emit glslDiagnostic("Material vertex include", vertexPath, error, 0);
-                emit status(error);
+                emit glslDiagnostic(DiagnosticStage::MaterialVertexInclude, vertexPath, error, 0);
+                reportError(error);
                 return;
             }
             static const QRegularExpression output(
@@ -773,8 +551,8 @@ void isf_vertShaderInit() {
         QString error;
         fragmentBody = expandMaterialIncludes(body, path, fragmentStartLine, 0, includeFiles, error);
         if (!error.isEmpty()) {
-            emit glslDiagnostic("Material include", path, error, 0);
-            emit status(error);
+            emit glslDiagnostic(DiagnosticStage::MaterialInclude, path, error, 0);
+            reportError(error);
             return;
         }
         static const QRegularExpression input(
@@ -808,7 +586,7 @@ void isf_vertShaderInit() {
             if (match.hasMatch()) {
                 const int sourceId = match.captured(1).toInt();
                 if (sourceId == 0) line = match.captured(match.capturedLength(2) ? 2 : 3).toInt();
-                else if (const auto &files = stage == "Vertex shader" ? vertexIncludes : includeFiles;
+                else if (const auto &files = stage == DiagnosticStage::Vertex ? vertexIncludes : includeFiles;
                          material && sourceId < files.size()) {
                     diagnosticFile = files.at(sourceId);
                     line = match.captured(match.capturedLength(2) ? 2 : 3).toInt();
@@ -816,26 +594,119 @@ void isf_vertShaderInit() {
             }
         }
         emit glslDiagnostic(stage, diagnosticFile, log, line);
-        emit status(stage + " failed" + (log.isEmpty() ? "." : ": " + log));
+        reportError(stage + " failed" + (log.isEmpty() ? "." : ": " + log));
     };
     if (!candidate->addShaderFromSourceCode(QOpenGLShader::Vertex, vert)) {
-        reportCompilerError("Vertex shader", vertexPath, !vertexPath.isEmpty());
+        reportCompilerError(DiagnosticStage::Vertex, vertexPath, !vertexPath.isEmpty());
         return;
     }
     if (!candidate->addShaderFromSourceCode(QOpenGLShader::Fragment, frag)) {
-        reportCompilerError("Fragment shader", path, true);
+        reportCompilerError(DiagnosticStage::Fragment, path, true);
         return;
     }
     if (!candidate->link()) {
-        reportCompilerError("Shader linking", {}, false);
+        reportCompilerError(DiagnosticStage::Linking, {}, false);
         return;
     }
     program = std::move(candidate);
-    emit status("Preview compiled");
+    reportCompiled();
     if (!missingImages.isEmpty())
-        emit glslDiagnostic("Material warning", path,
+        emit glslDiagnostic(DiagnosticStage::MaterialWarning, path,
             "Preview uses substitute textures. Restore these files for the original appearance:\n" +
             missingImages.join('\n'), 0);
+}
+
+// Image inputs, IMPORTED images and the transition placeholders, uploaded once after each change.
+// Audio inputs get a slot here and are filled by uploadAudioTextures.
+bool ShaderEngine::createTextures() {
+    imagesDirty = false;
+    textures.clear();
+    GLint limit = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &limit);
+    if (std::count(types.cbegin(), types.cend(), QString("sampler2D")) > limit) {
+        program.reset();
+        reportError("Too many textures for this GPU.");
+        return false;
+    }
+    for (auto it = types.cbegin(); it != types.cend(); ++it) {
+        if (it.value() != "sampler2D") continue;
+        if (std::any_of(renderPasses.begin(), renderPasses.end(),
+                        [&](const RenderPass &pass) { return pass.target == it.key(); })) continue;
+        if (audioTextures.contains(it.key())) {
+            textures.emplace_back(it.key(), nullptr);
+            continue;
+        }
+        auto image = images.value(it.key());
+        if (image.isNull() && ISFScanner::classify(header) == ISFType::Transition &&
+            (it.key() == "startImage" || it.key() == "endImage"))
+            image = TestPatterns::transitionCard(it.key() == "endImage");
+        if (image.isNull()) {
+            image = QImage(256, 256, QImage::Format_RGBA8888);
+            for (int y = 0; y < 256; ++y)
+                for (int x = 0; x < 256; ++x)
+                    image.setPixelColor(x, y, it.key() == "endImage" ? QColor(y, 80, x) : QColor(x, y, 180));
+        }
+        auto texture = std::make_unique<QOpenGLTexture>(glImage(image), QOpenGLTexture::DontGenerateMipMaps);
+        texture->setMinMagFilters(QOpenGLTexture::Linear, QOpenGLTexture::Linear);
+        const auto imageSettings = header.value("IMPORTED").toObject().value(it.key()).toObject();
+        texture->setWrapMode(imageSettings.value("GL_TEXTURE_WRAP").toString() == "REPEAT"
+            ? QOpenGLTexture::Repeat : QOpenGLTexture::ClampToEdge);
+        textures.emplace_back(it.key(), std::move(texture));
+    }
+    return true;
+}
+
+// One row per audio channel: the waveform around 0.5, or the FFT magnitudes, resampled to the width the
+// input asks for (MAX). A width of 1 holds the RMS level.
+void ShaderEngine::uploadAudioTextures(int textureLimit) {
+    const bool changed = uploadedAudio != audioFrame;
+    const bool useFloat = !QOpenGLContext::currentContext()->isOpenGLES() &&
+                          QOpenGLContext::currentContext()->format().majorVersion() >= 3;
+    for (auto &[name, texture] : textures) {
+        const auto input = audioTextures.constFind(name);
+        if (input == audioTextures.cend() || (!changed && texture)) continue;
+        const QList<QList<float>> empty;
+        const auto &channels = audioFrame ? (input->spectrum ? audioFrame->spectrum : audioFrame->wave) : empty;
+        const int height = qMax(1, int(channels.size()));
+        const int nativeWidth = input->spectrum ? 1024 : 2048;
+        const int width = qMin(textureLimit, input->width > 0 ? input->width : nativeWidth);
+        if (!texture || texture->width() != width || texture->height() != height) {
+            texture = std::make_unique<QOpenGLTexture>(QOpenGLTexture::Target2D);
+            texture->setFormat(useFloat ? QOpenGLTexture::RGBA32F : QOpenGLTexture::RGBA8_UNorm);
+            texture->setSize(width, height);
+            texture->allocateStorage(QOpenGLTexture::RGBA, useFloat ? QOpenGLTexture::Float32 : QOpenGLTexture::UInt8);
+            texture->setMinMagFilters(QOpenGLTexture::Linear, QOpenGLTexture::Linear);
+            texture->setWrapMode(QOpenGLTexture::ClampToEdge);
+        }
+        QList<float> pixels(width * height * 4, 1.f);
+        for (int y = 0; y < height; ++y) {
+            const QList<float> silence;
+            const auto &samples = y < channels.size() ? channels.at(y) : silence;
+            for (int x = 0; x < width; ++x) {
+                float value = input->spectrum ? 0.f : 0.5f;
+                if (!samples.isEmpty()) {
+                    const int start = x * samples.size() / width;
+                    const int end = qMax(start + 1, int((x + 1) * samples.size() / width));
+                    float sum = 0.f;
+                    for (int i = start; i < end; ++i) {
+                        const float sample = samples.at(i);
+                        sum += !input->spectrum && width == 1 ? sample * sample : sample;
+                    }
+                    const float mean = sum / (end - start);
+                    value = input->spectrum ? mean : width == 1 ? std::sqrt(mean) : 0.5f + 0.5f * mean;
+                }
+                const auto offset = (y * width + x) * 4;
+                pixels[offset] = pixels[offset + 1] = pixels[offset + 2] = qBound(0.f, value, 1.f);
+            }
+        }
+        if (useFloat) texture->setData(QOpenGLTexture::RGBA, QOpenGLTexture::Float32, pixels.constData());
+        else {
+            QByteArray bytes(pixels.size(), Qt::Uninitialized);
+            for (qsizetype i = 0; i < pixels.size(); ++i) bytes[i] = char(qRound(pixels.at(i) * 255.f));
+            texture->setData(QOpenGLTexture::RGBA, QOpenGLTexture::UInt8, bytes.constData());
+        }
+    }
+    uploadedAudio = audioFrame;
 }
 
 void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
@@ -879,14 +750,14 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
     const auto dimension = [&](const QJsonValue &expression, int fallback) {
         if (expression.isUndefined()) return fallback;
         const double value = expression.isDouble() ? expression.toDouble()
-            : DimensionExpression(expression.toString(), variables).evaluate();
+            : evaluateDimension(expression.toString(), variables);
         return std::isfinite(value) && value <= textureLimit && value >= 0
             ? qMax(1, int(value)) : 0;
     };
     const auto rejectBuffers = [&](const QString &message) {
         if (bufferError == message) return;
         bufferError = message;
-        emit status(message);
+        reportError(message);
     };
     if (!fixedRenderSize.isEmpty() && (size.width() > textureLimit || size.height() > textureLimit)) {
         rejectBuffers("Fixed resolution exceeds the GPU texture limit.");
@@ -913,7 +784,7 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
     }
     if (!bufferError.isEmpty()) {
         bufferError.clear();
-        emit status("Preview compiled");
+        reportCompiled();
     }
     if (fixedOutput && (fixedRenderSize.isEmpty() || fixedOutput->size() != size)) fixedOutput.reset();
     // Release all obsolete buffers before allocating replacements.
@@ -932,195 +803,37 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
         if (!fixedOutput || !fixedOutput->isValid()) {
             fixedOutput.reset();
             fixedOutputError = true;
-            emit status("Fixed resolution unavailable. Try a smaller size or switch to Auto.");
+            reportError("Fixed resolution unavailable. Try a smaller size or switch to Auto.");
             return;
         }
-        emit status("Preview compiled");
+        reportCompiled();
     }
 
-    if (imagesDirty) {
-        imagesDirty = false;
-        textures.clear();
-        GLint limit = 0;
-        glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &limit);
-        if (std::count(types.cbegin(), types.cend(), QString("sampler2D")) > limit) {
-            program.reset();
-            emit status("Too many textures for this GPU.");
-            return;
-        }
-        for (auto it = types.cbegin(); it != types.cend(); ++it) {
-            if (it.value() != "sampler2D") continue;
-            if (std::any_of(renderPasses.begin(), renderPasses.end(),
-                            [&](const RenderPass &pass) { return pass.target == it.key(); })) continue;
-            if (audioTextures.contains(it.key())) {
-                textures.emplace_back(it.key(), nullptr);
-                continue;
-            }
-            auto image = images.value(it.key());
-            if (image.isNull() && ISFScanner::classify(header) == ISFType::Transition &&
-                (it.key() == "startImage" || it.key() == "endImage"))
-                image = transitionCard(it.key() == "endImage");
-            if (image.isNull()) {
-                image = QImage(256, 256, QImage::Format_RGBA8888);
-                for (int y = 0; y < 256; ++y)
-                    for (int x = 0; x < 256; ++x)
-                        image.setPixelColor(x, y, it.key() == "endImage" ? QColor(y, 80, x) : QColor(x, y, 180));
-            }
-            auto texture = std::make_unique<QOpenGLTexture>(glImage(image), QOpenGLTexture::DontGenerateMipMaps);
-            texture->setMinMagFilters(QOpenGLTexture::Linear, QOpenGLTexture::Linear);
-            const auto imageSettings = header.value("IMPORTED").toObject().value(it.key()).toObject();
-            texture->setWrapMode(imageSettings.value("GL_TEXTURE_WRAP").toString() == "REPEAT"
-                ? QOpenGLTexture::Repeat : QOpenGLTexture::ClampToEdge);
-            textures.emplace_back(it.key(), std::move(texture));
-        }
-    }
-    if (!audioTextures.isEmpty()) {
-        const bool changed = uploadedAudio != audioFrame;
-        const bool useFloat = !QOpenGLContext::currentContext()->isOpenGLES() &&
-                              QOpenGLContext::currentContext()->format().majorVersion() >= 3;
-        for (auto &[name, texture] : textures) {
-            const auto input = audioTextures.constFind(name);
-            if (input == audioTextures.cend() || (!changed && texture)) continue;
-            const QList<QList<float>> empty;
-            const auto &channels = audioFrame ? (input->spectrum ? audioFrame->spectrum : audioFrame->wave) : empty;
-            const int height = qMax(1, int(channels.size()));
-            const int nativeWidth = input->spectrum ? 1024 : 2048;
-            const int width = qMin(textureLimit, input->width > 0 ? input->width : nativeWidth);
-            if (!texture || texture->width() != width || texture->height() != height) {
-                texture = std::make_unique<QOpenGLTexture>(QOpenGLTexture::Target2D);
-                texture->setFormat(useFloat ? QOpenGLTexture::RGBA32F : QOpenGLTexture::RGBA8_UNorm);
-                texture->setSize(width, height);
-                texture->allocateStorage(QOpenGLTexture::RGBA, useFloat ? QOpenGLTexture::Float32 : QOpenGLTexture::UInt8);
-                texture->setMinMagFilters(QOpenGLTexture::Linear, QOpenGLTexture::Linear);
-                texture->setWrapMode(QOpenGLTexture::ClampToEdge);
-            }
-            QList<float> pixels(width * height * 4, 1.f);
-            for (int y = 0; y < height; ++y) {
-                const QList<float> silence;
-                const auto &samples = y < channels.size() ? channels.at(y) : silence;
-                for (int x = 0; x < width; ++x) {
-                    float value = input->spectrum ? 0.f : 0.5f;
-                    if (!samples.isEmpty()) {
-                        const int start = x * samples.size() / width;
-                        const int end = qMax(start + 1, int((x + 1) * samples.size() / width));
-                        float sum = 0.f;
-                        for (int i = start; i < end; ++i) {
-                            const float sample = samples.at(i);
-                            sum += !input->spectrum && width == 1 ? sample * sample : sample;
-                        }
-                        const float mean = sum / (end - start);
-                        value = input->spectrum ? mean : width == 1 ? std::sqrt(mean) : 0.5f + 0.5f * mean;
-                    }
-                    const auto offset = (y * width + x) * 4;
-                    pixels[offset] = pixels[offset + 1] = pixels[offset + 2] = qBound(0.f, value, 1.f);
-                }
-            }
-            if (useFloat) texture->setData(QOpenGLTexture::RGBA, QOpenGLTexture::Float32, pixels.constData());
-            else {
-                QByteArray bytes(pixels.size(), Qt::Uninitialized);
-                for (qsizetype i = 0; i < pixels.size(); ++i) bytes[i] = char(qRound(pixels.at(i) * 255.f));
-                texture->setData(QOpenGLTexture::RGBA, QOpenGLTexture::UInt8, bytes.constData());
-            }
-        }
-        uploadedAudio = audioFrame;
-    }
+    if (imagesDirty && !createTextures()) return;
+    if (!audioTextures.isEmpty()) uploadAudioTextures(textureLimit);
     const float delta = playing && frame > 0 ? qMin(clock.restart() / 1000.0, 0.25) : 0.0;
     if (delta == 0) clock.restart();
     time += delta;
     updateVideoInput(screen);
     const auto now = QDateTime::currentDateTime();
     program->bind();
-    program->setUniformValue("TIME", float(time));
-    program->setUniformValue("CLOCK_TIME", float(materialClock.elapsed() / 1000.0));
-    program->setUniformValue("TIMEDELTA", delta);
-    program->setUniformValue("FRAMEINDEX", frame);
-    program->setUniformValue("DATE", float(now.date().year()), float(now.date().month()),
+    program->setUniformValue(uniform("TIME"), float(time));
+    program->setUniformValue(uniform("CLOCK_TIME"), float(materialClock.elapsed() / 1000.0));
+    program->setUniformValue(uniform("TIMEDELTA"), delta);
+    program->setUniformValue(uniform("FRAMEINDEX"), frame);
+    program->setUniformValue(uniform("DATE"), float(now.date().year()), float(now.date().month()),
                              float(now.date().day()), now.time().msecsSinceStartOfDay() / 1000.f);
     for (auto it = values.begin(); it != values.end(); ++it) {
         const auto type = types.value(it.key());
         const auto name = it.key().toUtf8();
-        if (type == "float") program->setUniformValue(name, value(it.key()).toFloat());
-        else if (type == "int" || type == "bool") program->setUniformValue(name, it.value().toInt());
-        else if (type == "vec2") program->setUniformValue(name, it.value().value<QVector2D>());
-        else if (type == "vec3") program->setUniformValue(name, it.value().value<QVector3D>());
-        else if (type == "vec4") program->setUniformValue(name, it.value().value<QVector4D>());
+        if (type == "float") program->setUniformValue(uniform(name), value(it.key()).toFloat());
+        else if (type == "int" || type == "bool") program->setUniformValue(uniform(name), it.value().toInt());
+        else if (type == "vec2") program->setUniformValue(uniform(name), it.value().value<QVector2D>());
+        else if (type == "vec3") program->setUniformValue(uniform(name), it.value().value<QVector3D>());
+        else if (type == "vec4") program->setUniformValue(uniform(name), it.value().value<QVector4D>());
     }
-    QHash<QString, double> generatorOutputs;
-    for (const auto &name : generatorOrder) {
-        auto it = generators.find(name);
-        const auto publish = [&](double output) {
-            generatorOutputs.insert(name, output);
-            program->setUniformValue(name.toUtf8(), float(output));
-        };
-        const auto &parameters = it->parameters;
-        const auto parameter = [&](const char *key, const QVariant &fallback) {
-            const auto entry = parameters.value(key);
-            if (entry.isString()) {
-                const auto reference = entry.toString();
-                if (generatorOutputs.contains(reference)) return QVariant(generatorOutputs.value(reference));
-                return values.value(reference, fallback);
-            }
-            return entry.isUndefined() ? fallback : entry.toVariant();
-        };
-        if (it->type == "incrementer") {
-            const auto increments = eventCounts.value(parameters.value("increment").toString());
-            const auto decrements = eventCounts.value(parameters.value("decrement").toString());
-            publish(double(increments - decrements));
-            continue;
-        }
-        if (it->type == "multiplier") {
-            publish(parameter("value1", 1.).toDouble() * parameter("value2", 1.).toDouble() *
-                    parameter("value3", 1.).toDouble() * parameter("value4", 1.).toDouble());
-            continue;
-        }
-        if (it->type == "pass_thru") {
-            const auto channel = parameters.value("input_value").toString();
-            if (channel == "/custom/BPM/bpm") publish(120.);
-            else if (channel == "/custom/BPM/bpmPos") publish(time * 2.);
-            else publish(parameter("input_value", 0.).toDouble());
-            continue;
-        }
-        double speed = parameter("speed", 1.0).toDouble();
-        const double curve = parameter("speed_curve", 1.0).toDouble();
-        if (speed != 0 && curve > 0) speed = std::copysign(std::pow(std::abs(speed), curve), speed);
-        if (parameter("reverse", false).toBool()) speed = -speed;
-        const bool bpmSync = parameter("bpm_sync", false).toBool();
-        constexpr double beatsPerSecond = 2.0; // Preview clock at 120 BPM.
-        if (bpmSync && speed != 0)
-            speed = std::copysign(std::exp2(std::round(std::log2(std::abs(speed)))), speed) * beatsPerSecond;
-        it->elapsed = resetGenerators ? time * speed : it->elapsed + delta * speed;
-        const double strob = parameter("strob", 0.0).toDouble() / (bpmSync ? beatsPerSecond : 1.0);
-        if (strob <= 0) it->sampled = it->elapsed;
-        else if (resetGenerators || std::floor(time / strob) != std::floor((time - delta) / strob))
-            it->sampled = it->elapsed - std::fmod(time, strob) * speed;
-        double output = it->sampled;
-        if (it->type == "animator") {
-            const auto shapeRef = parameters.value("shape").toString("Smooth");
-            const auto choices = materialChoices.value(shapeRef);
-            const int index = values.value(shapeRef, -1).toInt();
-            const auto shape = index >= 0 && index < choices.size() ? choices.at(index).toString() : shapeRef;
-            const double cycle = std::floor(output);
-            const double phase = output - cycle;
-            if (shape == "In") output = phase;
-            else if (shape == "Out") output = 1.0 - phase;
-            else if (shape == "Linear") output = 1.0 - std::abs(2.0 * phase - 1.0);
-            else if (shape == "Cut") output = phase >= 0.5 ? 1.0 : 0.0;
-            else if (shape == "Random" || shape == "Noise") {
-                const auto random = [](double cell) {
-                    const double hash = std::sin(cell * 127.1 + 311.7) * 43758.5453;
-                    return hash - std::floor(hash);
-                };
-                const double blend = phase * phase * (3.0 - 2.0 * phase);
-                output = random(cycle);
-                if (shape == "Noise") output += blend * (random(cycle + 1.0) - output);
-            } else {
-                constexpr double tau = 6.283185307179586;
-                output = 0.5 - 0.5 * std::cos(tau * phase);
-            }
-        }
-        publish(output);
-    }
-    resetGenerators = false;
+    for (const auto &[name, output] : generators.evaluate({values, eventCounts, materialChoices, time, delta}))
+        program->setUniformValue(uniform(name.toUtf8()), float(output));
     if (vao) QOpenGLContext::currentContext()->extraFunctions()->glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     const int position = program->attributeLocation("position");
@@ -1149,7 +862,7 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
                     buffer.write.reset();
                 }
                 program.reset();
-                emit status("Could not allocate preview pass buffers.");
+                reportError("Could not allocate preview pass buffers.");
                 return;
             }
             clearBuffer(*pass.read);
@@ -1173,8 +886,8 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
         } else {
             texture->bind(i);
         }
-        program->setUniformValue(name.toUtf8(), GLint(i));
-        program->setUniformValue(("_isflab_size_" + name).toUtf8(), float(textureSize.width()), float(textureSize.height()));
+        program->setUniformValue(uniform(name.toUtf8()), GLint(i));
+        program->setUniformValue(uniform(("_isflab_size_" + name).toUtf8()), float(textureSize.width()), float(textureSize.height()));
     }
     resetHistory = false;
     for (size_t i = 0; i < renderPasses.size(); ++i) {
@@ -1182,8 +895,8 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
         glBindFramebuffer(GL_FRAMEBUFFER, pass.write ? pass.write->handle() : (fixedOutput ? fixedOutput->handle() : screen));
         const auto passSize = passSizes[i];
         glViewport(0, 0, passSize.width(), passSize.height());
-        program->setUniformValue("PASSINDEX", GLint(i));
-        program->setUniformValue("RENDERSIZE", float(passSize.width()), float(passSize.height()));
+        program->setUniformValue(uniform("PASSINDEX"), GLint(i));
+        program->setUniformValue(uniform("RENDERSIZE"), float(passSize.width()), float(passSize.height()));
         GLuint unit = GLuint(textures.size());
         for (auto &input : renderPasses) {
             if (!input.read) continue;
@@ -1193,8 +906,8 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            program->setUniformValue(input.target.toUtf8(), GLint(unit++));
-            program->setUniformValue(("_isflab_size_" + input.target).toUtf8(), float(input.read->width()), float(input.read->height()));
+            program->setUniformValue(uniform(input.target.toUtf8()), GLint(unit++));
+            program->setUniformValue(uniform(("_isflab_size_" + input.target).toUtf8()), float(input.read->width()), float(input.read->height()));
         }
         if (pass.write) {
             glClearColor(0, 0, 0, 0);
@@ -1223,15 +936,8 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
         glBindFramebuffer(GL_FRAMEBUFFER, screen);
         glViewport(0, 0, viewportSize.width(), viewportSize.height());
     }
-    for (auto it = values.begin(); it != values.end(); ++it) {
-        if (it.value().userType() == QMetaType::Bool && it.value().toBool()) {
-            for (const auto &entry : header.value("INPUTS").toArray()) {
-                const auto input = entry.toObject();
-                if (input.value("NAME").toString() == it.key() && input.value("TYPE").toString() == "event")
-                    it.value() = false;
-            }
-        }
-    }
+    // An event input is true for exactly one frame.
+    for (auto event = eventCounts.keyBegin(); event != eventCounts.keyEnd(); ++event) values[*event] = false;
     if (playing) ++frame;
     emit timeChanged(time);
 }

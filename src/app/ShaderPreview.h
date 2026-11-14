@@ -32,7 +32,7 @@ public:
     void setImage(const QString &name, const QImage &image);
 signals:
     void audioStatusChanged(const QString &message);
-    void status(const QString &message);
+    void status(const QString &message, bool compiled);
     void glslDiagnostic(const QString &stage, const QString &file, const QString &log, int line);
     void inputStatus(const QString &message);
     void testCardActiveChanged(bool active);
@@ -52,6 +52,7 @@ private:
     void setAudioStatus(const QString &message);
     void reportPointer(const QPointF &position);
     void releaseEngine();
+    template <typename Change> void changeEngine(Change &&change);
     QSize viewportSize() const;
     ShaderEngine engine;
     std::unique_ptr<QAudioSource> audioSource;

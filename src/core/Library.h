@@ -3,18 +3,21 @@
 #include <QList>
 #include <QMap>
 
+// A shader file as read from disk. The parsed header and the type are derived once from the source:
+// change the source through setSource() so that they stay consistent.
 struct ShaderEntry {
     QString path;
     QByteArray source;
     std::optional<QJsonObject> header;
-    bool madMapper = ISFScanner::isMadMapperMaterial(source);
-    ISFType type() const {
-        if (madMapper) return ISFType::MadMapper;
-        if (header) return ISFScanner::classify(*header);
-        if (path.endsWith(".fs", Qt::CaseInsensitive) && ISFScanner::headerStart(source) < 0)
-            return ISFType::NonISF;
-        return ISFType::Unknown;
-    }
+    bool madMapper = false;
+
+    static ShaderEntry fromSource(const QString &path, const QByteArray &source);
+    static std::optional<ShaderEntry> read(const QString &path);
+    void setSource(const QByteArray &bytes);
+    ISFType type() const { return kind; }
+
+private:
+    ISFType kind = ISFType::Unknown;
 };
 
 struct ExportReport {

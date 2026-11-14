@@ -1,4 +1,5 @@
 #include "ShaderPreview.h"
+#include "SettingsKeys.h"
 #include <QMouseEvent>
 #include <QAudioBuffer>
 #include <QAudioDecoder>
@@ -77,7 +78,7 @@ ShaderPreview::ShaderPreview(QWidget *parent) : QOpenGLWidget(parent) {
     connect(&engine, &ShaderEngine::testCardActiveChanged, this, &ShaderPreview::testCardActiveChanged);
     connect(&engine, &ShaderEngine::shaderInputError, this, &ShaderPreview::shaderInputError);
     connect(&engine, &ShaderEngine::timeChanged, this, &ShaderPreview::timeChanged);
-    audioDeviceId = QSettings().value("audio/inputDevice").toByteArray();
+    audioDeviceId = QSettings().value(SettingsKeys::AudioInputDevice).toByteArray();
     auto *devices = new QMediaDevices(this);
     connect(devices, &QMediaDevices::audioInputsChanged, this, &ShaderPreview::syncAudio);
     auto *timer = new QTimer(this);
@@ -300,39 +301,33 @@ void ShaderPreview::syncAudio() {
     });
 }
 
-void ShaderPreview::load(const QByteArray &source, const QJsonObject &header, const QString &path) {
+// Engine changes may create or release GL resources: run them with the widget's context current,
+// then restart audio capture if the inputs changed and repaint.
+template <typename Change> void ShaderPreview::changeEngine(Change &&change) {
     if (isValid()) makeCurrent();
-    engine.load(source, header, path);
+    change();
     if (isValid()) doneCurrent();
     syncAudio();
     update();
 }
 
+void ShaderPreview::load(const QByteArray &source, const QJsonObject &header, const QString &path) {
+    changeEngine([&] { engine.load(source, header, path); });
+}
+
 void ShaderPreview::setLiveInput(std::unique_ptr<LiveInput> input) {
-    if (isValid()) makeCurrent();
-    engine.setLiveInput(std::move(input));
-    if (isValid()) doneCurrent();
-    syncAudio();
-    update();
+    changeEngine([&] { engine.setLiveInput(std::move(input)); });
 }
 
 void ShaderPreview::useTestCard() { setLiveInput(nullptr); }
 
 void ShaderPreview::setShaderInput(const QString &name, const QByteArray &source,
                                   const QJsonObject &header, const QString &path) {
-    if (isValid()) makeCurrent();
-    engine.setShaderInput(name, source, header, path);
-    if (isValid()) doneCurrent();
-    syncAudio();
-    update();
+    changeEngine([&] { engine.setShaderInput(name, source, header, path); });
 }
 
 void ShaderPreview::setImage(const QString &name, const QImage &image) {
-    if (isValid()) makeCurrent();
-    engine.setImage(name, image);
-    if (isValid()) doneCurrent();
-    syncAudio();
-    update();
+    changeEngine([&] { engine.setImage(name, image); });
 }
 
 void ShaderPreview::setFixedRenderSize(const QSize & size) {

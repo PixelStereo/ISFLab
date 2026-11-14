@@ -1,77 +1,66 @@
 #pragma once
-#include "Library.h"
+#include "LibraryActions.h"
 #include <QMainWindow>
-#include <QSet>
 
-class QCheckBox;
-class QPushButton;
-class SliderField;
-class QToolButton;
+class DiagnosticsPanel;
+class HeaderInspector;
+class LibraryActions;
+class MediaBin;
+class ParameterPanel;
+class PreviewPanel;
+class QDockWidget;
 class QTabWidget;
-class QLabel;
-class QLineEdit;
-class QPlainTextEdit;
-class QTreeWidget;
-class QTreeWidgetItem;
-class QVBoxLayout;
+class ShaderDocument;
 class ShaderPreview;
+class SourceEditor;
 
-class MainWindow : public QMainWindow {
+// Composes the Media Bin, the preview, the parameter panel and the editor, and keeps them on the same
+// shader: selecting, saving and closing go through here so that unsaved edits are never lost.
+class MainWindow final : public QMainWindow, private LibraryHost {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+
 protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
+
 private:
+    void createMenusAndToolbar();
+    QWidget *createEditorArea();
+    void connectPanels();
+    void restoreSession();
+
     void importPaths(const QStringList &paths, bool autoPreview = true);
-    void addFiles(const QStringList &paths, const QString &group = {});
-    void refresh();
     void select(const QString &path);
     void applyPreview();
     void updateImageTabs(const QJsonObject &header);
-    void writeHeader(const QJsonObject &header);
     void savePreviewDefaults();
     bool save();
-    bool resolveChanges();
-    void controls(const QJsonObject &header);
-    bool matches(const ShaderEntry &entry) const;
-    void exportFiltered(bool zip = false);
-    void organize();
-    void moveErrors();
-    void repairErrors(const QStringList &paths);
-    void findDuplicates();
-    enum class FileAction { Copy, Move, Trash };
-    void actOnShaders(const QStringList &paths, FileAction action);
-    void clearSelection();
-    ISFType binType(const ShaderEntry &entry) const;
-    void report(const ExportReport &result, const QString &destination, bool zip = false);
+    void showCompilerError(const QString &file, int line);
+    void showHeaderError(int position);
 
-    QMap<QString, ShaderEntry> entries;
-    QMap<QString, QString> previewErrors;
-    QString active, folder;
-    QTreeWidget *tree;
-    QMap<QString, QTreeWidgetItem *> rows, groups;
-    QMap<QString, QString> entryGroups;
-    bool flatBin = false;
-    QMap<ISFType, QPushButton *> typeTabs;
-    QMap<ISFType, QLabel *> typeCounts;
-    QPushButton *allTypes;
-    QVBoxLayout *categoryItems;
-    QMap<QString, QCheckBox *> categoryChecks;
-    QToolButton *categoryButton;
-    QSet<QString> uncheckedCategories;
-    QStringList categoryNames;
-    QLineEdit *search, *categorySearch;
-    QLabel *count, *previewStatus;
-    QPlainTextEdit *editor;
-    QTabWidget *sourceTabs;
-    QPlainTextEdit *vertexEditor;
-    QString vertexPath;
-    QByteArray vertexBaseline;
-    QPushButton *transitionAnimationButton;
-    QString previewedSource;
-    QVBoxLayout *parameters;
+    // LibraryHost
+    bool resolveChanges() override;
+    bool hasUnsavedChanges() const override;
+    QString activePath() const override;
+    void selectShader(const QString &path) override { select(path); }
+    void clearSelection() override;
+    QString browseFolder() const override { return folder; }
+
+    QString folder;
+    MediaBin *bin;
+    LibraryActions *actions;
+    PreviewPanel *previewPanel;
     ShaderPreview *preview;
+    ParameterPanel *parameters;
+    SourceEditor *editor;
+    SourceEditor *vertexEditor;
+    ShaderDocument *document;
+    QTabWidget *sourceTabs;
+    HeaderInspector *inspector;
+    DiagnosticsPanel *diagnostics;
+    QDockWidget *libraryDock, *paramsDock, *editorDock;
+    QByteArray vertexBaseline; // vertex source as last read or saved
 };

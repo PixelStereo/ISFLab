@@ -1,20 +1,12 @@
 #include "AppStyle.h"
+#include "ShaderTypes.h"
 #include <QApplication>
 #include <QPainter>
 #include <QStyledItemDelegate>
 #include <QStyleFactory>
 
 namespace AppStyle {
-QColor typeColor(ISFType type) {
-    switch (type) {
-    case ISFType::Generator: return QColor("#84cfab");
-    case ISFType::FX: return QColor("#94bdf4");
-    case ISFType::Transition: return QColor("#caadeb");
-    case ISFType::MadMapper: return QColor("#a5c9d6");
-    case ISFType::NonISF: return QColor("#e6bd8d");
-    default: return QColor("#e5a19b");
-    }
-}
+QColor typeColor(ISFType type) { return shaderTypeInfo(type).color; }
 
 QIcon icon(Icon kind, const QColor &color) {
     QPixmap image(40, 40);

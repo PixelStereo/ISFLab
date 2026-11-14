@@ -16,7 +16,7 @@ void collect(const QDir &dir, QStringList &paths, bool skipOrganized) {
         if (info.isDir()) {
             if (!skipOrganized || !folders.contains(info.fileName(), Qt::CaseInsensitive))
                 collect(QDir(info.absoluteFilePath()), paths, false);
-        } else if (QStringList{"fs", "isf"}.contains(info.suffix(), Qt::CaseInsensitive)) {
+        } else if (ISFScanner::isShaderFile(info.fileName())) {
             paths << info.absoluteFilePath();
         }
     }
@@ -115,6 +115,31 @@ QString copyEntry(const ShaderEntry &entry, QDir out, QString &created) {
     created = QDir(target).filePath(bundle.relativeFilePath(shaderDirectory.filePath(info.fileName())));
     return {};
 }
+}
+
+ShaderEntry ShaderEntry::fromSource(const QString &path, const QByteArray &source) {
+    ShaderEntry entry;
+    entry.path = path;
+    entry.setSource(source);
+    return entry;
+}
+
+std::optional<ShaderEntry> ShaderEntry::read(const QString &path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return std::nullopt;
+    const auto bytes = file.readAll();
+    if (file.error() != QFile::NoError) return std::nullopt;
+    return fromSource(path, bytes);
+}
+
+void ShaderEntry::setSource(const QByteArray &bytes) {
+    source = bytes;
+    header = ISFScanner::header(source);
+    madMapper = ISFScanner::isMadMapperMaterial(source);
+    if (madMapper) kind = ISFType::MadMapper;
+    else if (header) kind = ISFScanner::classify(*header);
+    else if (path.endsWith(".fs", Qt::CaseInsensitive) && ISFScanner::headerStart(source) < 0) kind = ISFType::NonISF;
+    else kind = ISFType::Unknown;
 }
 
 QStringList shaderFiles(const QString &folder, bool skipOrganized) {
