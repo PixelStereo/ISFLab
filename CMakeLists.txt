@@ -10,7 +10,7 @@ project(ISFLab VERSION "${isflab_version}" LANGUAGES CXX)
 # that release ("0.2.1+3") and a trailing "+" when it has uncommitted changes ("0.2.1+3+").
 set(ISFLAB_DISPLAY_VERSION "${PROJECT_VERSION}")
 if(NOT DEFINED ISFLAB_TAG_VERSION AND NOT ISFLAB_RELEASE_BUILD)
-    include(cmake/PixelStereoBuildId.cmake)
+    include(third_party/pxs/cmake/PixelStereoBuildId.cmake)
     pxs_nearest_release("${CMAKE_CURRENT_SOURCE_DIR}" isflab_release)
     if(NOT isflab_release STREQUAL "")
         set(ISFLAB_DISPLAY_VERSION "${isflab_release}") # the tag the commits are counted from, even before VERSION catches up
@@ -76,8 +76,6 @@ qt_add_executable(ISFLab WIN32 MACOSX_BUNDLE
     src/app/DiagnosticsPanel.h src/app/DiagnosticsPanel.cpp
     src/app/UiHelpers.h
     src/app/ShaderPreview.h src/app/ShaderPreview.cpp
-    src/app/SliderField.h src/app/SliderField.cpp
-    src/app/ColorPicker.h src/app/ColorPicker.cpp
 )
 qt_add_resources(ISFLab branding PREFIX "/" FILES assets/ISFLab-rounded.png)
 set(live_source src/engine/input/NoLiveInput.cpp)
@@ -125,7 +123,10 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 target_sources(ISFLabEngine PRIVATE src/engine/input/LiveInput.h ${live_source})
 target_link_libraries(ISFLabEngine PRIVATE ${live_libraries})
-target_link_libraries(ISFLab PRIVATE ISFLabEngine Qt6::Widgets Qt6::OpenGLWidgets Qt6::Multimedia)
+# Shared Pixel Stereo code (SliderField, ColorPicker), pinned as a submodule
+set(PXS_BUILD_TESTS OFF)
+add_subdirectory(third_party/pxs pxs EXCLUDE_FROM_ALL)
+target_link_libraries(ISFLab PRIVATE ISFLabEngine Qt6::Widgets Qt6::OpenGLWidgets Qt6::Multimedia pxs::widgets)
 target_compile_definitions(ISFLab PRIVATE ISFLAB_VERSION="${ISFLAB_DISPLAY_VERSION}")
 if(MSVC)
     target_compile_options(ISFLab PRIVATE /utf-8)
