@@ -35,6 +35,7 @@ public:
 
 private:
     void report(const ExportReport &result, const QString &destination, bool zip = false);
+    bool refuseWhileLoading();
 
     QWidget *window;
     MediaBin *bin;

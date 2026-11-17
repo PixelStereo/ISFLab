@@ -241,6 +241,14 @@ if(BUILD_TESTING)
     target_link_libraries(ISFLabShaderCheckTest PRIVATE Qt6::Core)
     add_test(NAME shadercheck COMMAND ISFLabShaderCheckTest)
     set_tests_properties(shadercheck PROPERTIES TIMEOUT 120)
+
+    # The Media Bin's filters, offscreen (no display or GPU needed)
+    qt_add_executable(ISFLabMediaBinTest tests/MediaBinTest.cpp src/app/MediaBin.h src/app/MediaBin.cpp
+        src/app/ShaderTypes.h src/app/ShaderTypes.cpp src/app/AppStyle.h src/app/AppStyle.cpp)
+    target_include_directories(ISFLabMediaBinTest PRIVATE src/app)
+    target_link_libraries(ISFLabMediaBinTest PRIVATE ISFLabCore Qt6::Widgets)
+    add_test(NAME mediabin COMMAND ISFLabMediaBinTest)
+    set_tests_properties(mediabin PROPERTIES TIMEOUT 60)
 endif()
 
 option(ISFLAB_TEST_OPENGL "Run the preview test in a graphical session" OFF)
