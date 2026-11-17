@@ -1,0 +1,115 @@
+// The Media Bin's filters: what the list shows for each state of the type tabs, the categories, the name filter and the
+// flat mode, and that the filter state and the list never disagree. Runs offscreen.
+#include "MediaBin.h"
+#include <QApplication>
+#include <QCheckBox>
+#include <QDir>
+#include <QFile>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QTemporaryDir>
+#include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
+#include <algorithm>
+#include <cstdio>
+
+namespace {
+int failures = 0;
+void check(bool ok, const char *why) {
+    if (!ok) { ++failures; std::printf("FAIL mediabin: %s\n", why); }
+}
+void write(const QString &path, const QByteArray &bytes) {
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly) || f.write(bytes) != bytes.size()) std::abort();
+}
+QStringList shown(QTreeWidget *tree) {
+    QStringList names;
+    for (QTreeWidgetItemIterator it(tree); *it; ++it)
+        if (!(*it)->isHidden() && !(*it)->data(0, Qt::UserRole).toString().isEmpty()) names << (*it)->text(0);
+    names.sort();
+    return names;
+}
+}
+
+int main(int argc, char **argv) {
+    qputenv("QT_QPA_PLATFORM", "offscreen");
+    QApplication app(argc, argv);
+    QApplication::setOrganizationName("ISFLabTest");
+    QApplication::setApplicationName("MediaBinTest");
+    QTemporaryDir dir;
+    const QString d = QFileInfo(dir.path()).canonicalFilePath(); // paths in the bin are canonical (/private/var on macOS)
+    write(d + "/a/WaveGen.fs", R"(/*{"CATEGORIES":["Noise","Generator"],"INPUTS":[]}*/ void main() {})");
+    write(d + "/a/wavefx.fs", R"(/*{"CATEGORIES":["Noise"],"INPUTS":[{"NAME":"inputImage","TYPE":"image"}]}*/ void main() {})");
+    write(d + "/a/Plain.fs", R"(/*{"INPUTS":[]}*/ void main() {})");
+    write(d + "/b/Blur.fs", R"(/*{"CATEGORIES":["noise","Blur"],"INPUTS":[{"NAME":"inputImage","TYPE":"image"}]}*/ void main() {})");
+    write(d + "/b/Plain.fs", R"(/*{"CATEGORIES":["Blur"],"INPUTS":[]}*/ void main() {})");
+    write(d + "/b/NoHeader.fs", "void main() {}");
+
+    MediaBin bin;
+    bin.resize(400, 700);
+    bin.show();
+    bin.addFiles(shaderFiles(d), d);
+    auto *tree = bin.findChild<QTreeWidget *>();
+    auto *search = bin.findChild<QLineEdit *>();
+    QPushButton *generators = nullptr, *filters = nullptr;
+    for (auto *b : bin.findChildren<QPushButton *>()) {
+        if (b->objectName() == "generatorType") generators = b;
+        if (b->objectName() == "effectType") filters = b;
+    }
+    QCheckBox *flat = nullptr;
+    QMap<QString, QCheckBox *> categories;
+    for (auto *c : bin.findChildren<QCheckBox *>()) {
+        if (c->text().startsWith("Don")) flat = c;
+        else categories.insert(c->text().toCaseFolded(), c);
+    }
+    check(tree && search && generators && filters && flat, "the widgets are there");
+    check(categories.size() == 3 + 1, "categories are merged without regard to case, with Uncategorized: Noise, Generator, Blur, (Uncategorized)");
+
+    const QStringList all{"Blur.fs", "NoHeader.fs", "Plain.fs", "Plain.fs", "WaveGen.fs", "wavefx.fs"};
+    check(shown(tree) == all, "every shader is shown at first");
+
+    search->setText("WAVE");
+    check(shown(tree) == QStringList({"WaveGen.fs", "wavefx.fs"}), "the name filter ignores case and applies as it is typed");
+    check(bin.matches(bin.shader(d + "/a/wavefx.fs")) && !bin.matches(bin.shader(d + "/a/Plain.fs")),
+          "matches() reads the filter the list shows");
+    search->setText("");
+    check(shown(tree) == all, "an empty filter shows everything again");
+
+    generators->setChecked(false);
+    check(shown(tree) == QStringList({"Blur.fs", "NoHeader.fs", "wavefx.fs"}), "a type tab off hides that type (the Non-ISF file stays)");
+    generators->setChecked(true);
+
+    categories.value("noise")->setChecked(false);
+    check(shown(tree) == QStringList({"Blur.fs", "NoHeader.fs", "Plain.fs", "Plain.fs", "WaveGen.fs"}),
+          "a category off hides the shaders that have only it (wavefx); WaveGen and Blur have another one and stay");
+    categories.value("noise")->setChecked(true);
+
+    flat->setChecked(true);
+    search->setText("plain");
+    check(shown(tree) == QStringList({"Plain.fs", "Plain.fs"}), "flat mode with a name filter");
+    search->setText("");
+    flat->setChecked(false);
+    check(shown(tree) == all, "back to the hierarchy");
+
+    // A preview error moves a shader to ERR, and out of its type
+    bin.setPreviewError(d + "/a/WaveGen.fs", "Fragment shader failed");
+    check(shown(tree).contains("WaveGen.fs"), "an ERR shader shows while ERR is on");
+    generators->setChecked(false);
+    check(shown(tree).contains("WaveGen.fs") && !shown(tree).contains("Plain.fs"), "an errored generator is no longer a generator");
+    generators->setChecked(true);
+    check(bin.clearPreviewError(d + "/a/WaveGen.fs"), "the error goes");
+
+    // Rewriting a shader changes its categories (the cache follows)
+    bin.setSource(d + "/a/Plain.fs", R"(/*{"CATEGORIES":["Brand New"],"INPUTS":[]}*/ void main() {})");
+    bin.refresh();
+    const auto boxes = bin.findChildren<QCheckBox *>();
+    check(std::any_of(boxes.begin(), boxes.end(), [](QCheckBox *c) { return c->text() == "Brand New"; }),
+          "a new category appears after a shader's source changes");
+
+    // Forgetting shaders
+    bin.forget({d + "/b/NoHeader.fs"});
+    check(shown(tree).size() == 5, "a forgotten shader leaves the list");
+    if (failures == 0) std::printf("ALL OK\n");
+    return failures ? 1 : 0;
+}

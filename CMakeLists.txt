@@ -233,6 +233,16 @@ if(BUILD_TESTING)
         PASS_REGULAR_EXPRESSION "Transitions/Crossfade.fs")
 endif()
 
+if(BUILD_TESTING)
+    # The Media Bin's filters, offscreen (no display or GPU needed)
+    qt_add_executable(ISFLabMediaBinTest tests/MediaBinTest.cpp src/app/MediaBin.h src/app/MediaBin.cpp
+        src/app/ShaderTypes.h src/app/ShaderTypes.cpp src/app/AppStyle.h src/app/AppStyle.cpp)
+    target_include_directories(ISFLabMediaBinTest PRIVATE src/app)
+    target_link_libraries(ISFLabMediaBinTest PRIVATE ISFLabCore Qt6::Widgets)
+    add_test(NAME mediabin COMMAND ISFLabMediaBinTest)
+    set_tests_properties(mediabin PROPERTIES TIMEOUT 60)
+endif()
+
 option(ISFLAB_TEST_OPENGL "Run the preview test in a graphical session" OFF)
 if(BUILD_TESTING AND ISFLAB_TEST_OPENGL)
     add_executable(ISFLabPreviewTest tests/PreviewTest.cpp src/app/ShaderPreview.cpp)

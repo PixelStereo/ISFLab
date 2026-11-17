@@ -59,7 +59,7 @@ MediaBin::MediaBin(QWidget *parent) : QWidget(parent) {
             const QSignalBlocker block(tab);
             tab->setChecked(true);
         }
-        refresh();
+        applyFilter();
     });
     for (const auto &info : shaderTypes()) {
         auto *tab = new QPushButton(info.filterLabel);
@@ -70,7 +70,7 @@ MediaBin::MediaBin(QWidget *parent) : QWidget(parent) {
         tab->setToolTip(info.toolTip);
         typeTabs.insert(info.type, tab);
         (info.primary ? typeLayout : otherTypes)->addWidget(tab, 1);
-        connect(tab, &QPushButton::toggled, this, &MediaBin::refresh);
+        connect(tab, &QPushButton::toggled, this, &MediaBin::applyFilter);
     }
     categoryButton = new QToolButton;
     categoryButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
@@ -119,7 +119,7 @@ MediaBin::MediaBin(QWidget *parent) : QWidget(parent) {
             it.value()->setChecked(checked);
             if (!checked) uncheckedCategories.insert(it.key());
         }
-        refresh();
+        applyFilter();
     };
     connect(selectAll, &QPushButton::clicked, this, [=] { setAll(true); });
     connect(deselectAll, &QPushButton::clicked, this, [=] { setAll(false); });
@@ -217,7 +217,11 @@ MediaBin::MediaBin(QWidget *parent) : QWidget(parent) {
     connect(tree, &QTreeWidget::itemClicked, this, activateRow);
     tree->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(tree, &QTreeWidget::customContextMenuRequested, this, &MediaBin::showContextMenu);
-    connect(search, &QLineEdit::textChanged, this, &MediaBin::refresh);
+    // A pass over every row takes about a millisecond for 12,000 shaders: no need to wait for a pause in the typing
+    connect(search, &QLineEdit::textChanged, this, [this](const QString &text) {
+        appliedQuery = text.trimmed().toCaseFolded();
+        applyFilter();
+    });
 }
 
 void MediaBin::showContextMenu(const QPoint &position) {
@@ -262,6 +266,8 @@ void MediaBin::showContextMenu(const QPoint &position) {
 void MediaBin::setSource(const QString &path, const QByteArray &source) {
     const auto entry = entries.find(path);
     if (entry != entries.end()) entry->setSource(source);
+    cache.remove(path);
+    categoriesDirty = true;
 }
 
 void MediaBin::addFiles(const QStringList &files, const QString &group) {
@@ -283,6 +289,7 @@ void MediaBin::addFiles(const QStringList &files, const QString &group) {
         }
         else ++failed;
     }
+    categoriesDirty = true;
     refresh();
     emit message(QString("Imported %1 shader(s); %2 could not be read.").arg(added).arg(failed));
 }
@@ -300,8 +307,10 @@ void MediaBin::forget(const QStringList &paths) {
         delete rows.take(path);
         entryGroups.remove(path);
         previewErrors.remove(path);
+        cache.remove(path);
         if (active == path) active.clear();
     }
+    categoriesDirty = true;
     refresh();
 }
 
@@ -313,7 +322,9 @@ void MediaBin::clear() {
     entries.clear();
     entryGroups.clear();
     previewErrors.clear();
+    cache.clear();
     active.clear();
+    categoriesDirty = true;
     refresh();
 }
 
@@ -363,7 +374,8 @@ void MediaBin::setPreviewError(const QString &path, const QString &status) {
     if (auto *row = rows.value(path); row && !row->isHidden() && tree->currentItem() == row)
         anchor = tree->itemAbove(row);
     previewErrors.insert(path, status);
-    refresh();
+    updateRow(path);
+    applyFilter();
     if (anchor && !anchor->isHidden() && rows.value(path) && rows.value(path)->isHidden()) {
         const QSignalBlocker blocker(tree);
         tree->setCurrentItem(anchor, 0, QItemSelectionModel::NoUpdate);
@@ -374,12 +386,15 @@ void MediaBin::applyCheckResults(const QMap<QString, QString> &errors, const QSt
     for (const auto &path : passed) previewErrors.remove(path);
     for (auto it = errors.cbegin(); it != errors.cend(); ++it)
         if (entries.contains(it.key())) previewErrors.insert(it.key(), it.value());
-    refresh();
+    for (const auto &path : passed) updateRow(path);
+    for (auto it = errors.cbegin(); it != errors.cend(); ++it) updateRow(it.key());
+    applyFilter();
 }
 
 bool MediaBin::clearPreviewError(const QString &path) {
     if (!previewErrors.remove(path)) return false;
-    refresh();
+    updateRow(path);
+    applyFilter();
     return true;
 }
 
@@ -401,7 +416,9 @@ void MediaBin::restoreSession(const QSettings &settings) {
     {
         const QSignalBlocker blocker(search);
         search->setText(settings.value(SettingsKeys::BinNameFilter).toString());
+        appliedQuery = search->text().trimmed().toCaseFolded();
     }
+    categoriesDirty = true;
     refresh();
 }
 
@@ -421,69 +438,127 @@ ISFType MediaBin::binType(const ShaderEntry &entry) const {
     return previewErrors.contains(entry.path) ? ISFType::Unknown : entry.type();
 }
 
-bool MediaBin::matches(const ShaderEntry &entry) const {
-    if (!typeTabs.value(binType(entry))->isChecked()) return false;
-    const auto categories = entry.header ? ISFScanner::categories(*entry.header) : QStringList{};
-    if (!uncheckedCategories.isEmpty()) {
-        bool checked = false;
-        if (categories.isEmpty()) checked = !uncheckedCategories.contains(QString());
-        for (const auto &tag : categories) checked |= !uncheckedCategories.contains(tag.toCaseFolded());
-        if (!checked) return false;
-    }
-    const auto query = search->text().trimmed();
-    return query.isEmpty() || QFileInfo(entry.path).fileName().contains(query, Qt::CaseInsensitive);
+const MediaBin::Cached &MediaBin::cached(const ShaderEntry &entry) const {
+    auto found = cache.find(entry.path);
+    if (found != cache.end()) return found.value();
+    Cached c;
+    const auto slash = entry.path.lastIndexOf('/');
+    c.foldedName = entry.path.mid(slash + 1).toCaseFolded();
+    const auto tags = entry.header ? ISFScanner::categories(*entry.header) : QStringList{};
+    for (const auto &tag : tags) c.categoryKeys << tag.toCaseFolded();
+    c.tooltip = entry.path + (entry.header ? "\n" + tags.join(", ") : QString());
+    return cache.insert(entry.path, std::move(c)).value();
 }
 
-void MediaBin::refresh() {
+bool MediaBin::matches(const ShaderEntry &entry) const { return passes(entry, binType(entry), cached(entry)); }
+
+bool MediaBin::passes(const ShaderEntry &, ISFType kind, const Cached &c) const {
+    if (!typeTabs.value(kind)->isChecked()) return false;
+    if (!uncheckedCategories.isEmpty()) {
+        bool checked = false;
+        if (c.categoryKeys.isEmpty()) checked = !uncheckedCategories.contains(QString());
+        for (const auto &key : c.categoryKeys) checked |= !uncheckedCategories.contains(key);
+        if (!checked) return false;
+    }
+    return appliedQuery.isEmpty() || c.foldedName.contains(appliedQuery);
+}
+
+// A preview error came or went: the row's kind, badge and tooltip, nothing else
+void MediaBin::updateRow(const QString &path) {
+    auto *item = rows.value(path);
+    const auto entry = entries.constFind(path);
+    if (!item || entry == entries.cend()) return;
+    const auto kind = binType(*entry);
+    item->setData(0, AppStyle::KindRole, int(kind));
+    item->setData(1, AppStyle::KindRole, int(kind));
+    item->setText(1, shaderTypeInfo(kind).badge);
+    item->setToolTip(1, previewErrors.value(path, ISFScanner::typeToString(kind)));
+}
+
+// Which rows the filters show, and the counts of what they show. Reads what refresh() built; no row data is touched
+void MediaBin::applyFilter() {
     const QSignalBlocker blockTree(tree);
-    QStringList categories;
-    bool hasUncategorized = false;
-    for (const auto &entry : std::as_const(entries)) {
-        const auto tags = entry.header ? ISFScanner::categories(*entry.header) : QStringList{};
-        hasUncategorized |= tags.isEmpty();
-        for (const auto &tag : tags)
-            if (!categories.contains(tag, Qt::CaseInsensitive)) categories << tag;
-    }
-    categories.sort(Qt::CaseInsensitive);
-    if (hasUncategorized) categories << QString();
-    if (categoryNames != categories) {
-        categoryNames = categories;
-        const auto query = categorySearch->text().trimmed();
-        QSet<QString> current;
-        while (auto *item = categoryItems->takeAt(0)) {
-            delete item->widget();
-            delete item;
-        }
-        categoryChecks.clear();
-        for (const auto &tag : categories) {
-            const auto key = tag.toCaseFolded();
-            current.insert(key);
-            auto *check = new QCheckBox(tag.isEmpty() ? "(Uncategorized)" : tag);
-            check->setChecked(!uncheckedCategories.contains(key));
-            categoryItems->addWidget(check);
-            check->setVisible(check->text().contains(query, Qt::CaseInsensitive));
-            categoryChecks.insert(key, check);
-            connect(check, &QCheckBox::toggled, this, [this, key](bool enabled) {
-                if (enabled) uncheckedCategories.remove(key);
-                else uncheckedCategories.insert(key);
-                refresh();
-            });
-        }
-        uncheckedCategories.intersect(current);
-    }
     categoryButton->setText(uncheckedCategories.isEmpty() ? "Categories: all" :
-        QString("Categories: %1 of %2").arg(categories.size() - uncheckedCategories.size()).arg(categories.size()));
+        QString("Categories: %1 of %2").arg(categoryNames.size() - uncheckedCategories.size()).arg(categoryNames.size()));
     bool all = true;
     for (auto *tab : typeTabs) all &= tab->isChecked();
     allTypes->setChecked(all);
     int visible = 0;
+    int shownByType[8] = {}, totalByType[8] = {};
+    std::vector<int> shownByGroup(size_t(groupKeys.size()), 0);
+    const bool hasErrors = !previewErrors.isEmpty();
+    for (const RowRef &ref : refs) {
+        const ShaderEntry &entry = *ref.entry;
+        const auto kind = hasErrors && previewErrors.contains(entry.path) ? ISFType::Unknown : entry.type();
+        const bool shown = passes(entry, kind, *ref.cached);
+        if (ref.item->isHidden() == shown) ref.item->setHidden(!shown);
+        ++totalByType[int(kind)];
+        if (shown) { ++visible; ++shownByType[int(kind)]; ++shownByGroup[size_t(ref.group)]; }
+    }
+    for (auto it = groups.cbegin(); it != groups.cend(); ++it) {
+        const int index = groupKeys.indexOf(it.key());
+        const int shown = index < 0 ? 0 : shownByGroup[size_t(index)];
+        it.value()->setText(1, QString::number(shown));
+        it.value()->setHidden(flatBin || !shown);
+    }
+    for (auto it = typeCounts.cbegin(); it != typeCounts.cend(); ++it) {
+        const auto kind = it.key();
+        const int shown = shownByType[int(kind)], total = totalByType[int(kind)];
+        const auto &caption = shaderTypeInfo(kind).caption;
+        it.value()->setText(QString("●  %1 %2").arg(shown == total ? QString::number(total) :
+                            QString("%1/%2").arg(shown).arg(total)).arg(caption));
+        it.value()->setToolTip(QString("%1 visible · %2 total").arg(shown).arg(total));
+    }
+    if (!active.isEmpty() && rows.contains(active) && !rows.value(active)->isHidden())
+        tree->setCurrentItem(rows.value(active), 0, QItemSelectionModel::NoUpdate);
+    count->setText(QString("%1 of %2 shaders").arg(visible).arg(entries.size()));
+}
+
+void MediaBin::refresh() {
+    const QSignalBlocker blockTree(tree);
+    if (categoriesDirty) {
+        categoriesDirty = false;
+        QHash<QString, QString> byKey; // case folded -> as first written
+        bool hasUncategorized = false;
+        for (const auto &entry : std::as_const(entries)) {
+            const auto &c = cached(entry);
+            hasUncategorized |= c.categoryKeys.isEmpty();
+            if (!entry.header) continue;
+            for (const auto &tag : ISFScanner::categories(*entry.header)) byKey.insert(tag.toCaseFolded(), byKey.value(tag.toCaseFolded(), tag));
+        }
+        QStringList categories = byKey.values();
+        categories.sort(Qt::CaseInsensitive);
+        if (hasUncategorized) categories << QString();
+        if (categoryNames != categories) {
+            categoryNames = categories;
+            const auto query = categorySearch->text().trimmed();
+            QSet<QString> current;
+            while (auto *item = categoryItems->takeAt(0)) {
+                delete item->widget();
+                delete item;
+            }
+            categoryChecks.clear();
+            for (const auto &tag : categories) {
+                const auto key = tag.toCaseFolded();
+                current.insert(key);
+                auto *check = new QCheckBox(tag.isEmpty() ? "(Uncategorized)" : tag);
+                check->setChecked(!uncheckedCategories.contains(key));
+                categoryItems->addWidget(check);
+                check->setVisible(check->text().contains(query, Qt::CaseInsensitive));
+                categoryChecks.insert(key, check);
+                connect(check, &QCheckBox::toggled, this, [this, key](bool enabled) {
+                    if (enabled) uncheckedCategories.remove(key);
+                    else uncheckedCategories.insert(key);
+                    applyFilter();
+                });
+            }
+            uncheckedCategories.intersect(current);
+        }
+    }
     bool inserted = false;
-    QMap<ISFType, int> shownByType, totalByType;
-    QMap<QString, int> shownByGroup;
     QHash<QString, int> nameCounts;
     if (flatBin)
-        for (const auto &entry : std::as_const(entries))
-            ++nameCounts[QFileInfo(entry.path).fileName().toCaseFolded()];
+        for (const auto &entry : std::as_const(entries)) ++nameCounts[cached(entry).foldedName];
     for (const auto &entry : std::as_const(entries)) {
         auto *item = rows.value(entry.path);
         const auto group = entryGroups.value(entry.path);
@@ -506,10 +581,10 @@ void MediaBin::refresh() {
                 groups.insert(group, parent);
             }
         }
-        const QFileInfo file(entry.path);
+        const auto &c = cached(entry);
         if (!item) {
             item = new QTreeWidgetItem;
-            item->setText(0, file.fileName());
+            item->setText(0, QFileInfo(entry.path).fileName());
             item->setData(0, AppStyle::PathRole, entry.path);
             rows.insert(entry.path, item);
         } else if (item->parent() != parent) {
@@ -522,39 +597,37 @@ void MediaBin::refresh() {
             inserted = true;
         }
         QString origin;
-        if (flatBin && nameCounts.value(file.fileName().toCaseFolded()) > 1) {
+        if (flatBin && nameCounts.value(c.foldedName) > 1) {
+            const QFileInfo file(entry.path);
             QDir community = QFileInfo(group).dir();
             if (community.cdUp() && community.dirName() == "community" && community.exists("manifest.json"))
                 origin = community.relativeFilePath(file.absolutePath());
             else origin = QDir::toNativeSeparators(file.absolutePath());
         }
-        item->setData(0, AppStyle::OriginRole, origin);
+        if (item->data(0, AppStyle::OriginRole).toString() != origin) item->setData(0, AppStyle::OriginRole, origin);
         const auto kind = binType(entry);
         item->setData(0, AppStyle::KindRole, int(kind));
         item->setData(1, AppStyle::KindRole, int(kind));
         item->setText(1, shaderTypeInfo(kind).badge);
         item->setToolTip(1, previewErrors.value(entry.path, ISFScanner::typeToString(kind)));
-        item->setToolTip(0, entry.path + (entry.header ? "\n" + ISFScanner::categories(*entry.header).join(", ") : QString()));
-        const bool shown = matches(entry);
-        item->setHidden(!shown);
-        ++totalByType[kind];
-        if (shown) { ++visible; ++shownByType[kind]; ++shownByGroup[group]; }
-    }
-    for (auto it = groups.cbegin(); it != groups.cend(); ++it) {
-        const int shown = shownByGroup.value(it.key());
-        it.value()->setText(1, QString::number(shown));
-        it.value()->setHidden(flatBin || !shown);
-    }
-    for (auto it = typeCounts.cbegin(); it != typeCounts.cend(); ++it) {
-        const auto kind = it.key();
-        const int shown = shownByType.value(kind), total = totalByType.value(kind);
-        const auto &caption = shaderTypeInfo(kind).caption;
-        it.value()->setText(QString("●  %1 %2").arg(shown == total ? QString::number(total) :
-                            QString("%1/%2").arg(shown).arg(total)).arg(caption));
-        it.value()->setToolTip(QString("%1 visible · %2 total").arg(shown).arg(total));
+        item->setToolTip(0, c.tooltip);
     }
     if (inserted) tree->sortItems(0, Qt::AscendingOrder);
-    if (!active.isEmpty() && rows.contains(active) && !rows.value(active)->isHidden())
-        tree->setCurrentItem(rows.value(active), 0, QItemSelectionModel::NoUpdate);
-    count->setText(QString("%1 of %2 shaders").arg(visible).arg(entries.size()));
+    // What applyFilter walks: its rows are all there now
+    refs.clear();
+    refs.reserve(size_t(entries.size()));
+    groupKeys.clear();
+    QHash<QString, int> groupIndex;
+    for (auto it = entries.cbegin(); it != entries.cend(); ++it) {
+        auto *item = rows.value(it.key());
+        if (!item) continue;
+        const QString &group = entryGroups.value(it.key());
+        auto index = groupIndex.find(group);
+        if (index == groupIndex.end()) {
+            index = groupIndex.insert(group, int(groupKeys.size()));
+            groupKeys << group;
+        }
+        refs.push_back({&it.value(), item, &cached(it.value()), index.value()});
+    }
+    applyFilter();
 }
