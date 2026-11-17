@@ -1,14 +1,19 @@
 #pragma once
 #include "Library.h"
 #include <QMap>
+#include <QHash>
 #include <QSet>
 #include <QWidget>
+#include <atomic>
+#include <memory>
+#include <vector>
 
 class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSettings;
+class QThread;
 class QToolButton;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -22,6 +27,11 @@ public:
     enum class FileAction { Copy, Move, Trash };
 
     explicit MediaBin(QWidget *parent = nullptr);
+    ~MediaBin() override;
+    // The saved shaders are being read in the background (restoreSession): the list fills in as they come
+    bool isLoading() const { return loading; }
+    // The shader to select once it has been read (quitting before that must not forget it)
+    QString pendingSelectionPath() const { return pendingSelection; }
 
     const QMap<QString, ShaderEntry> &shaders() const { return entries; }
     bool contains(const QString &path) const { return entries.contains(path); }
@@ -36,6 +46,19 @@ public:
     ISFType binType(const ShaderEntry &entry) const;
     bool matches(const ShaderEntry &entry) const;
     QStringList filteredErrors() const;
+    QStringList selectedPaths() const; // the shaders selected in the list, as it shows them
+
+    // What reloading from disk found
+    struct ReloadReport {
+        int reloaded = 0;         // read again
+        int changed = 0;          // whose source is not what the bin had
+        int missing = 0;          // whose file is gone or cannot be read: kept as they were
+        QStringList changedPaths;
+    };
+    // Reads these shaders again from disk: what was edited outside ISFLab comes in. A shader whose source changed
+    // leaves ERR (it is unknown again). Few are read now; many (reload all) in the background, like the saved session.
+    // `reloaded` is emitted when it is done, in both cases.
+    void reload(const QStringList &paths);
 
     void setActive(const QString &path);
     void revertCurrent();
@@ -51,9 +74,15 @@ public:
     void saveSession(QSettings &settings) const;
 
 public slots:
+    // Rebuilds the list: rows, their data and the categories, then applies the filters. For what changes the shaders;
+    // the filters alone only need applyFilter()
     void refresh();
+    // Shows and hides rows by the type tabs, the categories and the name filter, and updates the counts
+    void applyFilter();
 
 signals:
+    void reloaded(const MediaBin::ReloadReport &report);
+    void reloadRequested(const QStringList &paths);
     void activationRequested(const QString &path);
     void repairRequested(const QStringList &paths);
     void fileActionRequested(const QStringList &paths, MediaBin::FileAction action);
@@ -64,6 +93,52 @@ signals:
 
 private:
     void showContextMenu(const QPoint &position);
+    // What the filters read of a shader, worked out once (not on every keystroke)
+    struct Cached {
+        QString foldedName;
+        QStringList categoryKeys; // case folded; empty: uncategorized
+        QString tooltip;
+    };
+    const Cached &cached(const ShaderEntry &entry) const;
+    void updateRow(const QString &path); // after a preview error came or went: its kind, badge and tooltip only
+
+    // What applyFilter walks, built by refresh(): every shader with its row and cache, so that a pass over thousands of
+    // rows does no lookup by path (they share long prefixes: comparing them is what costs)
+    struct RowRef {
+        const ShaderEntry *entry;
+        QTreeWidgetItem *item;
+        const Cached *cached;
+        int group; // index into groupKeys
+    };
+    bool passes(const ShaderEntry &entry, ISFType kind, const Cached &c) const;
+    // refs points into entries and cache, which change when shaders are added, forgotten or rewritten (and `entries` is
+    // copied on write: a copy held by a caller makes the next change move it). Whoever changes them sets refsDirty;
+    // applyFilter() builds refs again before it walks them.
+    void rebuildRefs();
+    bool refsDirty = true;
+    std::vector<RowRef> refs;
+    QStringList groupKeys;
+
+    mutable QHash<QString, Cached> cache;
+    bool categoriesDirty = true; // the shaders changed: the category list is built again
+    QString appliedQuery; // the name filter, trimmed and case folded
+
+    // Background loading of the saved session: only the reading and parsing run on the worker; the list is the GUI
+    // thread's. Shaders not read yet stay in pendingRestore, which saveSession() keeps, so quitting mid-load does not
+    // shrink the bin.
+    void startLoading();
+    void cancelLoading();
+    void takeBatch(int generation, std::vector<ShaderEntry> batch, const QStringList &missing);
+    void finishLoading(int generation);
+    void applyReloaded(const QString &path, ShaderEntry fresh);
+    ReloadReport reloadReport;
+    bool reloadingAll = false; // the background load is a reload: it replaces what the bin has instead of skipping it
+    QMap<QString, QString> pendingRestore; // path -> folder row, not read yet
+    QString pendingSelection;               // the shader to select when it arrives
+    std::unique_ptr<QThread> loader;
+    std::shared_ptr<std::atomic<bool>> loaderCancel;
+    int loadGeneration = 0;
+    bool loading = false;
 
     QMap<QString, ShaderEntry> entries;
     QMap<QString, QString> entryGroups; // shader path -> folder row it is listed under

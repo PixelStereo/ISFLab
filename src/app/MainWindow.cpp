@@ -149,6 +149,8 @@ void MainWindow::connectPanels() {
     connect(bin, &MediaBin::fileActionRequested, actions, &LibraryActions::actOnShaders);
     connect(bin, &MediaBin::duplicatesRequested, actions, &LibraryActions::findDuplicates);
     connect(bin, &MediaBin::checkRequested, actions, &LibraryActions::checkShaders);
+    connect(bin, &MediaBin::reloadRequested, this, &MainWindow::reloadShaders);
+    connect(bin, &MediaBin::reloaded, this, &MainWindow::shadersReloaded);
     connect(bin, &MediaBin::clearRequested, this, [this] {
         if (!resolveChanges()) return;
         bin->clear();
@@ -195,6 +197,14 @@ void MainWindow::createMenusAndToolbar() {
     auto *openFiles = file->addAction("Import shaders…", QKeySequence::Open, this, [this] {
         importPaths(QFileDialog::getOpenFileNames(this, "Import ISF shaders", folder, ISFScanner::shaderFileFilter()));
     });
+    auto *reloadAction = file->addAction("Reload Shader from Disk", QKeySequence(Qt::CTRL | Qt::Key_R), this, [this] {
+        // the shaders selected in the list, or the one open
+        auto paths = bin->selectedPaths();
+        if (paths.isEmpty() && document->isOpen()) paths << document->path();
+        reloadShaders(paths);
+    });
+    auto *reloadAllAction = file->addAction("Reload All Shaders from Disk", QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R), this,
+                                            [this] { reloadShaders(bin->shaders().keys()); });
     file->addAction("Load examples", this, [this] {
 #ifdef Q_OS_MACOS
         const auto path = QDir(QCoreApplication::applicationDirPath()).filePath("../Resources/examples");
@@ -324,6 +334,9 @@ void MainWindow::createMenusAndToolbar() {
     command(openFiles, "Import files", AppStyle::Icon::File);
     command(openFolder, "Import folder", AppStyle::Icon::Folder);
     toolbar->addSeparator();
+    command(reloadAction, "Reload", AppStyle::Icon::Reload);
+    command(reloadAllAction, "Reload all", AppStyle::Icon::Reload);
+    toolbar->addSeparator();
     auto *exportMenu = new QMenu(toolbar);
     exportMenu->addAction(exportAction);
     exportMenu->addAction(zipAction);
@@ -363,7 +376,8 @@ void MainWindow::closeEvent(QCloseEvent *event) {
     QSettings settings;
     settings.setValue(SettingsKeys::WindowGeometry, saveGeometry());
     settings.setValue(SettingsKeys::BinLastFolder, folder);
-    settings.setValue(SettingsKeys::BinActive, document->path());
+    // Quitting while the bin still loads: the saved active shader may not have arrived, so it is not forgotten
+    settings.setValue(SettingsKeys::BinActive, document->isOpen() ? document->path() : bin->pendingSelectionPath());
     bin->saveSession(settings);
     event->accept();
 }
@@ -381,6 +395,36 @@ void MainWindow::importPaths(const QStringList &paths, bool autoPreview) {
     }
     if (!files.isEmpty()) bin->addFiles(files);
     if (autoPreview && !document->isOpen()) bin->selectFirstVisible();
+}
+
+// Reads these shaders again from disk. The open one may have unsaved edits: they are saved or discarded first (or the
+// reload is cancelled), as when another shader is selected
+void MainWindow::reloadShaders(const QStringList &paths) {
+    if (paths.isEmpty()) {
+        statusBar()->showMessage("Select a shader to reload.", 4000);
+        return;
+    }
+    if (bin->isLoading()) {
+        statusBar()->showMessage("The Media Bin is still loading its shaders. Try again in a moment.", 4000);
+        return;
+    }
+    reloadsActive = document->isOpen() && paths.contains(document->path());
+    if (reloadsActive && !resolveChanges()) return;
+    statusBar()->showMessage(paths.size() > 1 ? QString("Reloading %1 shaders…").arg(paths.size()) : "Reloading…", 3000);
+    bin->reload(paths);
+}
+
+// The open shader is shown again from what is on disk now: its source, its vertex shader and its images (the preview
+// compiles it again, which also gives a shader that failed its second chance). If its editor changed since, it is left alone.
+void MainWindow::shadersReloaded(const MediaBin::ReloadReport &report) {
+    QString text = QString("Reloaded %1 shader(s) from disk: %2 changed").arg(report.reloaded).arg(report.changed);
+    if (report.missing > 0) text += QString(", %1 file(s) missing or unreadable (kept)").arg(report.missing);
+    if (reloadsActive && document->isOpen()) {
+        if (!document->isModified()) select(document->path());
+        else text += ". The open shader was edited meanwhile: not reloaded.";
+    }
+    reloadsActive = false;
+    statusBar()->showMessage(text + ".", 8000);
 }
 
 void MainWindow::select(const QString &path) {
