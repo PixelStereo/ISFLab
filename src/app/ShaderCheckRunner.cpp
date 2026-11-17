@@ -51,7 +51,7 @@ void ShaderCheckRunner::stopAll() {
                 lane->process->kill();
                 lane->process->waitForFinished();
             }
-            delete lane->process;
+            lane->process->deleteLater(); // (a slot of this very process may be running: it must outlive the call)
             lane->process = nullptr;
         }
 }
@@ -87,10 +87,11 @@ void ShaderCheckRunner::launch(Lane &lane) {
 // output or a worker's end while we are still here. So every state change is made first and the signals are sent
 // afterwards, from a state that is whole; nothing is read from a lane after a signal was sent.
 void ShaderCheckRunner::read(Lane &lane) {
+    if (!lane.process || over) return;
     lane.buffer += lane.process->readAllStandardOutput();
     QList<QByteArray> lines; // every complete line out of the buffer before any is handled
     for (qsizetype end; (end = lane.buffer.indexOf('\n')) >= 0;) {
-        lines << lane.buffer.left(end);
+        lines << lane.buffer.left(end).trimmed(); // (a Windows worker ends its lines with \r\n)
         lane.buffer.remove(0, end + 1);
     }
     QList<QPair<int, QString>> news;
@@ -131,6 +132,7 @@ void ShaderCheckRunner::ended(Lane &lane) {
         }
         lane.paths = lane.paths.mid(lane.completed);
     }
+    lane.process->disconnect(this);
     lane.process->deleteLater();
     lane.process = nullptr;
     lane.list.reset();

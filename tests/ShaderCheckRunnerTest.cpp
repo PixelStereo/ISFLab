@@ -22,12 +22,12 @@ int fakeWorker(const QString &listFile) {
     const auto paths = QString::fromUtf8(list.readAll()).split('\n', Qt::SkipEmptyParts);
     const bool slow = qEnvironmentVariableIsSet("SHADERCHECK_SLOW");
     for (qsizetype i = 0; i < paths.size(); ++i) {
-        std::printf("BEGIN %d\n", int(i));
+        std::printf("BEGIN %d\r\n", int(i)); // (CRLF: what a Windows worker writes)
         std::fflush(stdout);
         if (slow) QThread::msleep(40);
         if (paths.at(i).contains("crash")) std::_Exit(139); // the driver took the process down
-        if (paths.at(i).contains("bad")) std::printf("ERR %d Fragment%%20shader%%20failed\n", int(i));
-        else std::printf("OK %d\n", int(i));
+        if (paths.at(i).contains("bad")) std::printf("ERR %d Fragment%%20shader%%20failed\r\n", int(i));
+        else std::printf("OK %d\r\n", int(i));
         std::fflush(stdout);
     }
     return 0;
