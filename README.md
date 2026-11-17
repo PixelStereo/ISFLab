@@ -37,3 +37,7 @@ Open **File → Load examples** to try all three shader types.
 Push a version tag such as `v0.0.1` to publish macOS, Windows and Linux archives through GitHub Actions.
 
 [ISF documentation](https://docs.isf.video/)
+
+## License
+
+AGPL-3.0, see [LICENSE](LICENSE).
