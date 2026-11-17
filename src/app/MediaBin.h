@@ -46,6 +46,19 @@ public:
     ISFType binType(const ShaderEntry &entry) const;
     bool matches(const ShaderEntry &entry) const;
     QStringList filteredErrors() const;
+    QStringList selectedPaths() const; // the shaders selected in the list, as it shows them
+
+    // What reloading from disk found
+    struct ReloadReport {
+        int reloaded = 0;         // read again
+        int changed = 0;          // whose source is not what the bin had
+        int missing = 0;          // whose file is gone or cannot be read: kept as they were
+        QStringList changedPaths;
+    };
+    // Reads these shaders again from disk: what was edited outside ISFLab comes in. A shader whose source changed
+    // leaves ERR (it is unknown again). Few are read now; many (reload all) in the background, like the saved session.
+    // `reloaded` is emitted when it is done, in both cases.
+    void reload(const QStringList &paths);
 
     void setActive(const QString &path);
     void revertCurrent();
@@ -68,6 +81,8 @@ public slots:
     void applyFilter();
 
 signals:
+    void reloaded(const MediaBin::ReloadReport &report);
+    void reloadRequested(const QStringList &paths);
     void activationRequested(const QString &path);
     void repairRequested(const QStringList &paths);
     void fileActionRequested(const QStringList &paths, MediaBin::FileAction action);
@@ -115,6 +130,9 @@ private:
     void cancelLoading();
     void takeBatch(int generation, std::vector<ShaderEntry> batch, const QStringList &missing);
     void finishLoading(int generation);
+    void applyReloaded(const QString &path, ShaderEntry fresh);
+    ReloadReport reloadReport;
+    bool reloadingAll = false; // the background load is a reload: it replaces what the bin has instead of skipping it
     QMap<QString, QString> pendingRestore; // path -> folder row, not read yet
     QString pendingSelection;               // the shader to select when it arrives
     std::unique_ptr<QThread> loader;

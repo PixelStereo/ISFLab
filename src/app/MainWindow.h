@@ -34,6 +34,9 @@ private:
 
     void importPaths(const QStringList &paths, bool autoPreview = true);
     void select(const QString &path);
+    void reloadShaders(const QStringList &paths);
+    void shadersReloaded(const MediaBin::ReloadReport &report);
+    bool reloadsActive = false; // the reload under way includes the open shader
     void applyPreview();
     void updateImageTabs(const QJsonObject &header);
     void savePreviewDefaults();

@@ -247,6 +247,7 @@ void MediaBin::showContextMenu(const QPoint &position) {
         menu.addAction("Repair Selected ERR…", this, [this, paths] { emit repairRequested(paths); });
         menu.addSeparator();
     }
+    menu.addAction("Reload from Disk", this, [this, paths] { emit reloadRequested(paths); });
     menu.addAction("Check Selected", this, [this, paths] { emit checkRequested(paths); });
     menu.addSeparator();
     menu.addAction("Copy to Folder…", this, [this, paths] { emit fileActionRequested(paths, FileAction::Copy); });
@@ -334,6 +335,56 @@ void MediaBin::clear() {
     categoriesDirty = true;
     refsDirty = true;
     refresh();
+}
+
+QStringList MediaBin::selectedPaths() const {
+    QStringList paths;
+    for (const auto *row : tree->selectedItems()) {
+        const auto path = row->data(0, AppStyle::PathRole).toString();
+        if (!path.isEmpty() && !row->isHidden()) paths << path;
+    }
+    return paths;
+}
+
+// A shader read again: when its source is what the bin has, nothing changes (the entry, the rows and the ERR status stay)
+void MediaBin::applyReloaded(const QString &path, ShaderEntry fresh) {
+    ++reloadReport.reloaded;
+    const auto old = entries.constFind(path);
+    if (old == entries.cend() || old->source == fresh.source) return;
+    ++reloadReport.changed;
+    reloadReport.changedPaths << path;
+    entries[path] = std::move(fresh);
+    previewErrors.remove(path); // what the preview said was about the old source
+    cache.remove(path);
+    categoriesDirty = true;
+    refsDirty = true;
+}
+
+void MediaBin::reload(const QStringList &paths) {
+    if (loading) {
+        emit message("The Media Bin is still loading its shaders. Try again in a moment.");
+        return;
+    }
+    reloadReport = {};
+    constexpr int nowLimit = 300; // more than that is read in the background
+    if (paths.size() > nowLimit) {
+        for (const auto &path : paths)
+            if (entries.contains(path)) pendingRestore.insert(path, entryGroups.value(path));
+        startLoading(); // (it resets the mode: set it after)
+        if (!loading) { // nothing to read
+            emit reloaded(reloadReport);
+            return;
+        }
+        reloadingAll = true;
+        return;
+    }
+    for (const auto &path : paths) {
+        if (!entries.contains(path)) continue;
+        if (auto fresh = ShaderEntry::read(path)) applyReloaded(path, std::move(*fresh));
+        else ++reloadReport.missing;
+    }
+    if (reloadReport.changed > 0) refresh();
+    emit reloaded(reloadReport);
 }
 
 QStringList MediaBin::filteredErrors() const {
@@ -436,6 +487,7 @@ void MediaBin::cancelLoading() {
     loader.reset();
     loaderCancel.reset();
     loading = false;
+    reloadingAll = false;
     pendingSelection.clear();
 }
 
@@ -476,11 +528,23 @@ void MediaBin::takeBatch(int generation, std::vector<ShaderEntry> batch, const Q
     for (auto &entry : batch) {
         const QString path = entry.path;
         const QString group = pendingRestore.take(path);
+        if (reloadingAll) { // a reload: what the bin has is replaced if its source differs
+            applyReloaded(path, std::move(entry));
+            continue;
+        }
         if (entries.contains(path)) continue; // imported by hand in the meantime
         entryGroups.insert(path, group);
         entries.insert(path, std::move(entry));
     }
-    for (const auto &path : missing) pendingRestore.remove(path);
+    for (const auto &path : missing) {
+        pendingRestore.remove(path);
+        if (reloadingAll) ++reloadReport.missing; // kept as it was
+    }
+    if (reloadingAll) {
+        if (reloadReport.changed > 0) refresh(); // nothing changed so far: nothing to rebuild
+        else applyFilter(); // the "loading" count
+        return;
+    }
     categoriesDirty = true;
     refsDirty = true;
     refresh();
@@ -499,6 +563,12 @@ void MediaBin::finishLoading(int generation) {
     loading = false;
     pendingSelection.clear();
     pendingRestore.clear(); // what could not be read is not kept
+    if (reloadingAll) {
+        reloadingAll = false;
+        applyFilter();
+        emit reloaded(reloadReport);
+        return;
+    }
     applyFilter(); // the "loading" suffix goes
     emit message(QString("%1 shaders loaded.").arg(entries.size()));
 }

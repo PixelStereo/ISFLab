@@ -182,6 +182,67 @@ int main(int argc, char **argv) {
             early.restoreSession(saved);
         }
     }
+    // Reload from disk
+    {
+        MediaBin reloadBin;
+        reloadBin.show();
+        const QString base = d + "/reload";
+        write(base + "/Edited.fs", R"(/*{"CATEGORIES":["Before"],"INPUTS":[]}*/ void main() {})");
+        write(base + "/Same.fs", R"(/*{"CATEGORIES":["Stay"],"INPUTS":[]}*/ void main() {})");
+        write(base + "/Gone.fs", R"(/*{"INPUTS":[]}*/ void main() {})");
+        reloadBin.addFiles(shaderFiles(base), base);
+        const QString realBase = QFileInfo(base).canonicalFilePath(); // (a file that is gone has no canonical path)
+        const auto at = [&](const char *name) { return realBase + "/" + name; };
+        MediaBin::ReloadReport report;
+        int answers = 0;
+        QObject::connect(&reloadBin, &MediaBin::reloaded, &reloadBin, [&](const MediaBin::ReloadReport &r) { report = r; ++answers; });
+        reloadBin.setPreviewError(at("Edited.fs"), "Fragment shader failed");
+        reloadBin.setPreviewError(at("Same.fs"), "Fragment shader failed");
+        write(base + "/Edited.fs.new", R"(/*{"CATEGORIES":["After"],"INPUTS":[{"NAME":"inputImage","TYPE":"image"}]}*/ void main() {})");
+        QFile::remove(base + "/Edited.fs");
+        QFile::rename(base + "/Edited.fs.new", base + "/Edited.fs"); // now an FX, in another category
+        QFile::remove(base + "/Gone.fs");
+        reloadBin.reload({at("Edited.fs"), at("Same.fs"), at("Gone.fs")});
+        check(answers == 1 && report.reloaded == 2 && report.changed == 1 && report.missing == 1 &&
+                  report.changedPaths == QStringList({at("Edited.fs")}), "reload reports what was read, changed and missing");
+        check(reloadBin.shader(at("Edited.fs")).type() == ISFType::FX, "a shader edited on disk comes in (its type too)");
+        check(reloadBin.shader(at("Gone.fs")).path == at("Gone.fs"), "a file that is gone is kept as it was");
+        auto *view = reloadBin.findChild<QTreeWidget *>();
+        const auto boxes = reloadBin.findChildren<QCheckBox *>();
+        check(std::any_of(boxes.begin(), boxes.end(), [](QCheckBox *c) { return c->text() == "After"; }) &&
+                  !std::any_of(boxes.begin(), boxes.end(), [](QCheckBox *c) { return c->text() == "Before"; }),
+              "its categories are rebuilt");
+        QPushButton *errors = nullptr;
+        for (auto *b : reloadBin.findChildren<QPushButton *>()) if (b->objectName() == "errorType") errors = b;
+        check(errors, "the ERR tab");
+        // ERR: Same.fs failed and its file did not change, so it still does; Edited.fs is unknown again, so it does not
+        const QStringList filtered = reloadBin.filteredErrors();
+        check(filtered == QStringList({at("Same.fs")}), "an unchanged shader keeps its ERR status; an edited one leaves it");
+        check(shown(view).contains("Edited.fs"), "the edited shader is in the list");
+
+        // Many: read in the background
+        const QString many = d + "/many";
+        for (int i = 0; i < 320; ++i) write(QString("%1/m%2.fs").arg(many).arg(i, 3, 10, QChar('0')), R"(/*{"INPUTS":[]}*/ void main() {})");
+        MediaBin bigBin;
+        bigBin.show();
+        bigBin.addFiles(shaderFiles(many), many);
+        for (const int i : {7, 100, 250})
+            write(QString("%1/m%2.fs").arg(many).arg(i, 3, 10, QChar('0')), R"(/*{"CATEGORIES":["Late"],"INPUTS":[]}*/ void main() {})");
+        MediaBin::ReloadReport big;
+        int bigSignals = 0;
+        QObject::connect(&bigBin, &MediaBin::reloaded, &bigBin, [&](const MediaBin::ReloadReport &r) { big = r; ++bigSignals; });
+        bigBin.reload(bigBin.shaders().keys());
+        check(bigBin.isLoading() && bigSignals == 0, "reloading many shaders is done in the background");
+        QElapsedTimer waited;
+        waited.start();
+        while (bigBin.isLoading() && waited.elapsed() < 10000) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        check(bigSignals == 1 && big.reloaded == 320 && big.changed == 3 && big.missing == 0, "the background reload reports like the other");
+        const auto bigBoxes = bigBin.findChildren<QCheckBox *>();
+        check(std::any_of(bigBoxes.begin(), bigBoxes.end(), [](QCheckBox *c) { return c->text() == "Late"; }),
+              "what changed shows in its categories");
+        bigBin.reload({}); // nothing to read
+        check(bigSignals == 2 && big.reloaded == 0, "reloading nothing still answers");
+    }
     if (failures == 0) std::printf("ALL OK\n");
     return failures ? 1 : 0;
 }

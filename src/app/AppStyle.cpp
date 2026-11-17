@@ -35,6 +35,10 @@ QIcon icon(Icon kind, const QColor &color) {
         line({{10,14},{10,3}});
         line({{6,7},{10,3},{14,7}});
         break;
+    case Icon::Reload: // a circular arrow
+        p.drawArc(QRectF(4, 4, 12, 12), 40 * 16, 270 * 16);
+        line({{14.5,2.5},{15.5,6.5},{11.5,7}});
+        break;
     }
     p.end();
     image.setDevicePixelRatio(2);
