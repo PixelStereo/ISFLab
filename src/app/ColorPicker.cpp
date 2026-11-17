@@ -1,4 +1,4 @@
-// Color picker adapted from NyxMap (GPL-3.0).
+// Color picker adapted from NyxMap (AGPL-3.0).
 #include "ColorPicker.h"
 #include "SliderField.h"
 
