@@ -16,6 +16,7 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QThread>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
@@ -303,6 +304,7 @@ void MediaBin::forget(const QStringList &paths) {
         groups.clear();
     }
     for (const auto &path : paths) {
+        pendingRestore.remove(path);
         entries.remove(path);
         delete rows.take(path);
         entryGroups.remove(path);
@@ -315,6 +317,8 @@ void MediaBin::forget(const QStringList &paths) {
 }
 
 void MediaBin::clear() {
+    cancelLoading();
+    pendingRestore.clear();
     const QSignalBlocker blocker(tree);
     tree->clear();
     rows.clear();
@@ -364,6 +368,7 @@ void MediaBin::selectFirstVisible() {
 
 void MediaBin::requestSelection(const QString &path) {
     if (auto *row = rows.value(path); row && !row->isHidden()) tree->setCurrentItem(row);
+    else if (!row && loading && pendingRestore.contains(path)) pendingSelection = path; // when it has been read
 }
 
 void MediaBin::setPreviewError(const QString &path, const QString &status) {
@@ -400,12 +405,7 @@ bool MediaBin::clearPreviewError(const QString &path) {
 
 void MediaBin::restoreSession(const QSettings &settings) {
     const auto savedEntries = settings.value(SettingsKeys::BinEntries).toMap();
-    for (auto it = savedEntries.cbegin(); it != savedEntries.cend(); ++it) {
-        if (const auto entry = ShaderEntry::read(it.key())) {
-            entries.insert(it.key(), *entry);
-            entryGroups.insert(it.key(), it.value().toString());
-        }
-    }
+    for (auto it = savedEntries.cbegin(); it != savedEntries.cend(); ++it) pendingRestore.insert(it.key(), it.value().toString());
     const auto disabledTypes = settings.value(SettingsKeys::BinDisabledTypes).toStringList();
     for (auto *tab : typeTabs) {
         const QSignalBlocker blocker(tab);
@@ -420,11 +420,88 @@ void MediaBin::restoreSession(const QSettings &settings) {
     }
     categoriesDirty = true;
     refresh();
+    startLoading(); // the window is up at once; the shaders come in as they are read
+}
+
+MediaBin::~MediaBin() { cancelLoading(); }
+
+void MediaBin::cancelLoading() {
+    ++loadGeneration; // what the worker still posts is dropped
+    if (loaderCancel) loaderCancel->store(true);
+    if (loader) loader->wait();
+    loader.reset();
+    loaderCancel.reset();
+    loading = false;
+    pendingSelection.clear();
+}
+
+void MediaBin::startLoading() {
+    if (pendingRestore.isEmpty()) return;
+    cancelLoading();
+    loading = true;
+    const int generation = loadGeneration;
+    loaderCancel = std::make_shared<std::atomic<bool>>(false);
+    const auto cancelled = loaderCancel;
+    const QStringList paths = pendingRestore.keys();
+    loader.reset(QThread::create([this, generation, cancelled, paths] {
+        constexpr int batchSize = 1500; // a first batch quickly, then the rest
+        std::vector<ShaderEntry> batch;
+        QStringList missing;
+        const auto post = [&] {
+            if (batch.empty() && missing.isEmpty()) return;
+            QMetaObject::invokeMethod(this, [this, generation, entries = std::move(batch), lost = std::move(missing)]() mutable {
+                takeBatch(generation, std::move(entries), lost);
+            }, Qt::QueuedConnection);
+            batch = {};
+            missing = {};
+        };
+        for (const auto &path : paths) {
+            if (cancelled->load()) return;
+            if (auto entry = ShaderEntry::read(path)) batch.push_back(std::move(*entry));
+            else missing << path;
+            if (int(batch.size() + missing.size()) >= batchSize) post();
+        }
+        post();
+        QMetaObject::invokeMethod(this, [this, generation] { finishLoading(generation); }, Qt::QueuedConnection);
+    }));
+    loader->start();
+}
+
+void MediaBin::takeBatch(int generation, std::vector<ShaderEntry> batch, const QStringList &missing) {
+    if (generation != loadGeneration) return; // the bin was cleared or the load restarted since
+    for (auto &entry : batch) {
+        const QString path = entry.path;
+        const QString group = pendingRestore.take(path);
+        if (entries.contains(path)) continue; // imported by hand in the meantime
+        entryGroups.insert(path, group);
+        entries.insert(path, std::move(entry));
+    }
+    for (const auto &path : missing) pendingRestore.remove(path);
+    categoriesDirty = true;
+    refresh();
+    if (!pendingSelection.isEmpty() && rows.contains(pendingSelection)) {
+        const QString path = pendingSelection;
+        pendingSelection.clear();
+        requestSelection(path);
+    }
+}
+
+void MediaBin::finishLoading(int generation) {
+    if (generation != loadGeneration) return;
+    if (loader) loader->wait(); // it has posted everything: it is done
+    loader.reset();
+    loaderCancel.reset();
+    loading = false;
+    pendingSelection.clear();
+    pendingRestore.clear(); // what could not be read is not kept
+    applyFilter(); // the "loading" suffix goes
+    emit message(QString("%1 shaders loaded.").arg(entries.size()));
 }
 
 void MediaBin::saveSession(QSettings &settings) const {
     QVariantMap savedEntries;
     for (auto it = entryGroups.cbegin(); it != entryGroups.cend(); ++it) savedEntries.insert(it.key(), it.value());
+    for (auto it = pendingRestore.cbegin(); it != pendingRestore.cend(); ++it) savedEntries.insert(it.key(), it.value()); // not read yet
     settings.setValue(SettingsKeys::BinEntries, savedEntries);
     QStringList disabledTypes;
     for (const auto *tab : typeTabs)
@@ -511,7 +588,8 @@ void MediaBin::applyFilter() {
     }
     if (!active.isEmpty() && rows.contains(active) && !rows.value(active)->isHidden())
         tree->setCurrentItem(rows.value(active), 0, QItemSelectionModel::NoUpdate);
-    count->setText(QString("%1 of %2 shaders").arg(visible).arg(entries.size()));
+    count->setText(QString("%1 of %2 shaders").arg(visible).arg(entries.size()) +
+                   (loading ? QString(" · loading %1 more…").arg(pendingRestore.size()) : QString()));
 }
 
 void MediaBin::refresh() {

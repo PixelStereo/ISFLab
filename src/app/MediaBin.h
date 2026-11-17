@@ -4,6 +4,8 @@
 #include <QHash>
 #include <QSet>
 #include <QWidget>
+#include <atomic>
+#include <memory>
 #include <vector>
 
 class QCheckBox;
@@ -11,6 +13,7 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSettings;
+class QThread;
 class QToolButton;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -24,6 +27,9 @@ public:
     enum class FileAction { Copy, Move, Trash };
 
     explicit MediaBin(QWidget *parent = nullptr);
+    ~MediaBin() override;
+    // The saved shaders are being read in the background (restoreSession): the list fills in as they come
+    bool isLoading() const { return loading; }
 
     const QMap<QString, ShaderEntry> &shaders() const { return entries; }
     bool contains(const QString &path) const { return entries.contains(path); }
@@ -94,6 +100,20 @@ private:
     mutable QHash<QString, Cached> cache;
     bool categoriesDirty = true; // the shaders changed: the category list is built again
     QString appliedQuery; // the name filter, trimmed and case folded
+
+    // Background loading of the saved session: only the reading and parsing run on the worker; the list is the GUI
+    // thread's. Shaders not read yet stay in pendingRestore, which saveSession() keeps, so quitting mid-load does not
+    // shrink the bin.
+    void startLoading();
+    void cancelLoading();
+    void takeBatch(int generation, std::vector<ShaderEntry> batch, const QStringList &missing);
+    void finishLoading(int generation);
+    QMap<QString, QString> pendingRestore; // path -> folder row, not read yet
+    QString pendingSelection;               // the shader to select when it arrives
+    std::unique_ptr<QThread> loader;
+    std::shared_ptr<std::atomic<bool>> loaderCancel;
+    int loadGeneration = 0;
+    bool loading = false;
 
     QMap<QString, ShaderEntry> entries;
     QMap<QString, QString> entryGroups; // shader path -> folder row it is listed under

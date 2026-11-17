@@ -4,6 +4,9 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QEventLoop>
+#include <QSettings>
 #include <QFile>
 #include <QLineEdit>
 #include <QPushButton>
@@ -110,6 +113,54 @@ int main(int argc, char **argv) {
     // Forgetting shaders
     bin.forget({d + "/b/NoHeader.fs"});
     check(shown(tree).size() == 5, "a forgotten shader leaves the list");
+    // The saved session loads in the background
+    {
+        const QStringList paths = shaderFiles(d);
+        const QString missing = d + "/gone/Missing.fs";
+        QSettings saved(d + "/saved.ini", QSettings::IniFormat);
+        QVariantMap entries;
+        for (const auto &path : paths) entries.insert(QFileInfo(path).canonicalFilePath(), d);
+        entries.insert(missing, d);
+        saved.setValue("mediaBin/entries", entries);
+        const auto spin = [&](MediaBin &b) {
+            QElapsedTimer t;
+            t.start();
+            while (b.isLoading() && t.elapsed() < 10000) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        };
+        {
+            MediaBin loaded;
+            loaded.show();
+            loaded.restoreSession(saved);
+            check(loaded.isLoading() && loaded.shaders().isEmpty(), "restoring returns at once: the shaders come in afterwards");
+            const QString wanted = QFileInfo(d + "/b/Blur.fs").canonicalFilePath();
+            loaded.requestSelection(wanted); // before it has been read
+            QSettings midway(d + "/midway.ini", QSettings::IniFormat);
+            loaded.saveSession(midway);
+            check(midway.value("mediaBin/entries").toMap().size() == int(paths.size()) + 1,
+                  "quitting mid-load keeps every saved shader, read or not");
+            spin(loaded);
+            check(!loaded.isLoading() && loaded.shaders().size() == paths.size(), "every shader that exists is loaded");
+            auto *view = loaded.findChild<QTreeWidget *>();
+            check(view->currentItem() && view->currentItem()->data(0, Qt::UserRole).toString() == wanted,
+                  "the shader asked for before it arrived is selected when it has");
+            QSettings after(d + "/after.ini", QSettings::IniFormat);
+            loaded.saveSession(after);
+            check(after.value("mediaBin/entries").toMap().size() == int(paths.size()), "a file that is gone is not kept");
+        }
+        {
+            MediaBin cleared;
+            cleared.restoreSession(saved);
+            cleared.clear();
+            QElapsedTimer t;
+            t.start();
+            while (t.elapsed() < 200) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            check(!cleared.isLoading() && cleared.shaders().isEmpty(), "clearing mid-load drops what was still being read");
+        }
+        {
+            MediaBin early; // destroyed while the worker reads: no crash, no wait for the whole list
+            early.restoreSession(saved);
+        }
+    }
     if (failures == 0) std::printf("ALL OK\n");
     return failures ? 1 : 0;
 }

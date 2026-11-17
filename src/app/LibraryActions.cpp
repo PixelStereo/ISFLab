@@ -29,8 +29,15 @@
 LibraryActions::LibraryActions(QWidget *window, MediaBin *bin, LibraryHost *host)
     : QObject(window), window(window), bin(bin), host(host) {}
 
+// What these operations act on is what the Media Bin has read so far: wait for it to be whole
+bool LibraryActions::refuseWhileLoading() {
+    if (!bin->isLoading()) return false;
+    QMessageBox::information(window, "Media Bin", "The Media Bin is still loading its shaders. Try again in a moment.");
+    return true;
+}
+
 void LibraryActions::exportFiltered(bool zip) {
-    if (!host->resolveChanges()) return;
+    if (refuseWhileLoading() || !host->resolveChanges()) return;
     QList<ShaderEntry> selected;
     QStringList unreadable;
     for (const auto &entry : bin->shaders()) {
@@ -187,6 +194,7 @@ void LibraryActions::actOnShaders(const QStringList &paths, MediaBin::FileAction
 }
 
 void LibraryActions::checkShaders(const QStringList &paths) {
+    if (refuseWhileLoading()) return;
     const QString title = "Check Shaders";
     QStringList targets;
     int skipped = 0;
@@ -288,6 +296,7 @@ void LibraryActions::checkShaders(const QStringList &paths) {
 }
 
 void LibraryActions::findDuplicates() {
+    if (refuseWhileLoading()) return;
     if (bin->shaders().isEmpty()) {
         QMessageBox::information(window, "Find Duplicates", "Import shaders to look for duplicates.");
         return;
@@ -474,6 +483,7 @@ void LibraryActions::repairErrors(const QStringList &paths) {
 }
 
 void LibraryActions::moveErrors() {
+    if (refuseWhileLoading()) return;
     if (!host->resolveChanges()) return;
     QStringList selected;
     for (const auto &entry : bin->shaders())
