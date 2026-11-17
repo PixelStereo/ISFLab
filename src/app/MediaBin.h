@@ -30,6 +30,8 @@ public:
     ~MediaBin() override;
     // The saved shaders are being read in the background (restoreSession): the list fills in as they come
     bool isLoading() const { return loading; }
+    // The shader to select once it has been read (quitting before that must not forget it)
+    QString pendingSelectionPath() const { return pendingSelection; }
 
     const QMap<QString, ShaderEntry> &shaders() const { return entries; }
     bool contains(const QString &path) const { return entries.contains(path); }
@@ -94,6 +96,11 @@ private:
         int group; // index into groupKeys
     };
     bool passes(const ShaderEntry &entry, ISFType kind, const Cached &c) const;
+    // refs points into entries and cache, which change when shaders are added, forgotten or rewritten (and `entries` is
+    // copied on write: a copy held by a caller makes the next change move it). Whoever changes them sets refsDirty;
+    // applyFilter() builds refs again before it walks them.
+    void rebuildRefs();
+    bool refsDirty = true;
     std::vector<RowRef> refs;
     QStringList groupKeys;
 

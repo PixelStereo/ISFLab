@@ -363,7 +363,8 @@ void MainWindow::closeEvent(QCloseEvent *event) {
     QSettings settings;
     settings.setValue(SettingsKeys::WindowGeometry, saveGeometry());
     settings.setValue(SettingsKeys::BinLastFolder, folder);
-    settings.setValue(SettingsKeys::BinActive, document->path());
+    // Quitting while the bin still loads: the saved active shader may not have arrived, so it is not forgotten
+    settings.setValue(SettingsKeys::BinActive, document->isOpen() ? document->path() : bin->pendingSelectionPath());
     bin->saveSession(settings);
     event->accept();
 }

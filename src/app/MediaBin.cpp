@@ -269,6 +269,7 @@ void MediaBin::setSource(const QString &path, const QByteArray &source) {
     if (entry != entries.end()) entry->setSource(source);
     cache.remove(path);
     categoriesDirty = true;
+    refsDirty = true;
 }
 
 void MediaBin::addFiles(const QStringList &files, const QString &group) {
@@ -291,6 +292,7 @@ void MediaBin::addFiles(const QStringList &files, const QString &group) {
         else ++failed;
     }
     categoriesDirty = true;
+    refsDirty = true;
     refresh();
     emit message(QString("Imported %1 shader(s); %2 could not be read.").arg(added).arg(failed));
 }
@@ -313,6 +315,7 @@ void MediaBin::forget(const QStringList &paths) {
         if (active == path) active.clear();
     }
     categoriesDirty = true;
+    refsDirty = true;
     refresh();
 }
 
@@ -329,6 +332,7 @@ void MediaBin::clear() {
     cache.clear();
     active.clear();
     categoriesDirty = true;
+    refsDirty = true;
     refresh();
 }
 
@@ -478,6 +482,7 @@ void MediaBin::takeBatch(int generation, std::vector<ShaderEntry> batch, const Q
     }
     for (const auto &path : missing) pendingRestore.remove(path);
     categoriesDirty = true;
+    refsDirty = true;
     refresh();
     if (!pendingSelection.isEmpty() && rows.contains(pendingSelection)) {
         const QString path = pendingSelection;
@@ -555,6 +560,7 @@ void MediaBin::updateRow(const QString &path) {
 // Which rows the filters show, and the counts of what they show. Reads what refresh() built; no row data is touched
 void MediaBin::applyFilter() {
     const QSignalBlocker blockTree(tree);
+    if (refsDirty) rebuildRefs();
     categoryButton->setText(uncheckedCategories.isEmpty() ? "Categories: all" :
         QString("Categories: %1 of %2").arg(categoryNames.size() - uncheckedCategories.size()).arg(categoryNames.size()));
     bool all = true;
@@ -691,10 +697,16 @@ void MediaBin::refresh() {
         item->setToolTip(0, c.tooltip);
     }
     if (inserted) tree->sortItems(0, Qt::AscendingOrder);
-    // What applyFilter walks: its rows are all there now
+    refsDirty = true; // its rows are all there now: applyFilter() builds what it walks
+    applyFilter();
+}
+
+void MediaBin::rebuildRefs() {
+    refsDirty = false;
     refs.clear();
     refs.reserve(size_t(entries.size()));
     groupKeys.clear();
+    for (const auto &entry : std::as_const(entries)) cached(entry); // all in the cache before any address is taken
     QHash<QString, int> groupIndex;
     for (auto it = entries.cbegin(); it != entries.cend(); ++it) {
         auto *item = rows.value(it.key());
@@ -707,5 +719,4 @@ void MediaBin::refresh() {
         }
         refs.push_back({&it.value(), item, &cached(it.value()), index.value()});
     }
-    applyFilter();
 }

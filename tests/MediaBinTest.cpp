@@ -110,6 +110,26 @@ int main(int argc, char **argv) {
     check(std::any_of(boxes.begin(), boxes.end(), [](QCheckBox *c) { return c->text() == "Brand New"; }),
           "a new category appears after a shader's source changes");
 
+    // A shader with a preview error whose source changes (a repair, a save), then a filter: nothing the filter walks may be
+    // stale. Meant for an AddressSanitizer build; it also checks the outcome
+    search->setText("blur"); // the filter reads the cached names and categories of every row
+    bin.setPreviewError(d + "/b/Blur.fs", "Fragment shader failed");
+    bin.setSource(d + "/b/Blur.fs", R"(/*{"CATEGORIES":["Brand New"],"INPUTS":[]}*/ void main() {})");
+    bin.clearPreviewError(d + "/b/Blur.fs"); // runs the filter before anyone called refresh()
+    generators->setChecked(false);
+    check(!shown(tree).contains("Blur.fs"), "a repaired shader is a generator now: a type tab off hides it");
+    generators->setChecked(true);
+    check(shown(tree) == QStringList({"Blur.fs"}), "and it still matches the name filter");
+    search->setText("");
+    {
+        auto snapshot = bin.shaders(); // a copy of the list that outlives a change to it, as in the file operations
+        bin.setSource(d + "/a/Plain.fs", R"(/*{"CATEGORIES":["Another"],"INPUTS":[]}*/ void main() {})");
+        snapshot.clear();
+        generators->setChecked(false);
+        generators->setChecked(true);
+    }
+    bin.refresh();
+
     // Forgetting shaders
     bin.forget({d + "/b/NoHeader.fs"});
     check(shown(tree).size() == 5, "a forgotten shader leaves the list");
@@ -134,6 +154,7 @@ int main(int argc, char **argv) {
             check(loaded.isLoading() && loaded.shaders().isEmpty(), "restoring returns at once: the shaders come in afterwards");
             const QString wanted = QFileInfo(d + "/b/Blur.fs").canonicalFilePath();
             loaded.requestSelection(wanted); // before it has been read
+            check(loaded.pendingSelectionPath() == wanted, "the selection asked for waits for its shader (and is saved if we quit)");
             QSettings midway(d + "/midway.ini", QSettings::IniFormat);
             loaded.saveSession(midway);
             check(midway.value("mediaBin/entries").toMap().size() == int(paths.size()) + 1,
