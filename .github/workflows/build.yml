@@ -126,6 +126,8 @@ jobs:
             Select-Object -First 1
           if (!$crt) { throw "Microsoft Visual C++ runtime DLLs are missing from the build environment" }
           Copy-Item (Join-Path $crt.FullName "*.dll") -Destination $bin -Force -ErrorAction Stop
+          # Nothing to install for the user: no Visual C++ redistributable installer in the package
+          Get-ChildItem package -Recurse -Filter "vc_redist*.exe" -ErrorAction SilentlyContinue | Remove-Item -Force
           $qtPlatform = Get-ChildItem package -Recurse -File -Filter qwindows.dll | Select-Object -First 1
           $appExe = "$appName.exe"
           foreach ($file in @($appExe, "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")) {
@@ -140,10 +142,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "NSIS installation failed" }
           $compiler = Join-Path ${env:ProgramFiles(x86)} "NSIS/makensis.exe"
           $app = Get-Content build-ci/application.json | ConvertFrom-Json
-          & $compiler "/DTAG_SUFFIX=$env:TAG_SUFFIX" "/DAPP_NAME=$($app.name)" "/DAPP_EXE=$($app.name).exe" packaging/windows.nsi
-          if ($LASTEXITCODE -ne 0 -or !(Test-Path "ISFLab-Windows-x64$env:TAG_SUFFIX-Setup.exe")) {
+          # The user picks the install mode: for all users (the default) or for the current user only
+          $setup = Join-Path $PWD "ISFLab-Windows-x64$env:TAG_SUFFIX-Setup.exe"
+          & $compiler "/DPRODUCT=ISFLab" "/DAPP_VERSION=$($app.version)" "/DAPP_EXE=bin\$($app.name).exe" "/DPAYLOAD=$PWD\package" "/DOUTPUT=$setup" packaging/windows.nsi
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path $setup)) {
             throw "Windows installer build failed"
           }
+          $clean = Join-Path $env:RUNNER_TEMP "installed"
+          $installer = Start-Process -FilePath $setup -ArgumentList "/S /CurrentUser /D=$clean" -Wait -PassThru
+          if ($installer.ExitCode -ne 0) { throw "Installer failed: $($installer.ExitCode)" }
+          if (!(Test-Path (Join-Path $clean "app/bin/$($app.name).exe"))) { throw "The installed executable is missing" }
       - name: Archive Linux executable
         if: runner.os == 'Linux'
         run: tar -C package -czf "ISFLab-Linux-x64${TAG_SUFFIX}.tar.gz" .

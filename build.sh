@@ -44,10 +44,10 @@ if [[ "$run" == 1 ]]; then
             app_name="$(sed -n 's/.*"name":"\([^"]*\)".*/\1/p' build/application.json)"
             app="$PWD/build/$app_name.app"
             [[ -n "$app_name" && -d "$app" ]] || { echo "Built application not found: $app" >&2; exit 1; }
-            for stale in "$PWD"/build/ISFLab\ v*.app; do
+            for stale in "$PWD"/build/ISFLab\ [0-9]*.app; do
                 [[ -d "$stale" && "$stale" != "$app" ]] && rm -rf "$stale"
             done
-            pkill -f "$PWD/build/ISFLab v.*\.app/Contents/MacOS/" 2>/dev/null && sleep 1
+            pkill -f "$PWD/build/ISFLab [0-9].*\.app/Contents/MacOS/" 2>/dev/null && sleep 1
             open -n "$app" ;;
         MINGW*|MSYS*|CYGWIN*)
             executable="$(ls "$PWD/build/$config"/ISFLab*.exe | head -1)"
