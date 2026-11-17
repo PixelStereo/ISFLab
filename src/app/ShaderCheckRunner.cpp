@@ -83,36 +83,48 @@ void ShaderCheckRunner::launch(Lane &lane) {
     }
 }
 
+// A slot of `progress` may run the event loop (a modal progress dialog does, in setValue()), which can deliver more
+// output or a worker's end while we are still here. So every state change is made first and the signals are sent
+// afterwards, from a state that is whole; nothing is read from a lane after a signal was sent.
 void ShaderCheckRunner::read(Lane &lane) {
     lane.buffer += lane.process->readAllStandardOutput();
-    for (qsizetype end; (end = lane.buffer.indexOf('\n')) >= 0; lane.buffer.remove(0, end + 1)) {
-        const auto line = lane.buffer.left(end);
+    QList<QByteArray> lines; // every complete line out of the buffer before any is handled
+    for (qsizetype end; (end = lane.buffer.indexOf('\n')) >= 0;) {
+        lines << lane.buffer.left(end);
+        lane.buffer.remove(0, end + 1);
+    }
+    QList<QPair<int, QString>> news;
+    for (const auto &line : lines) {
         const auto fields = line.split(' ');
         const auto index = fields.value(1).toLongLong();
         if (line.startsWith("FAIL ") && result.failure.isEmpty()) result.failure = QString::fromUtf8(line.mid(5));
         if (index < 0 || index >= lane.paths.size()) continue;
         if (line.startsWith("BEGIN ")) {
             lane.current = index;
-            emit progress(done, lane.paths.at(index));
+            news << qMakePair(done, lane.paths.at(index));
         } else if (line.startsWith("OK ") || line.startsWith("ERR ")) {
             if (line.startsWith("OK ")) result.passed << lane.paths.at(index);
             else result.errors.insert(lane.paths.at(index), QUrl::fromPercentEncoding(fields.value(2)));
             lane.current = -1;
             lane.completed = index + 1;
-            emit progress(++done, lane.paths.at(index));
+            news << qMakePair(++done, lane.paths.at(index));
         }
     }
+    for (const auto &[checked, current] : news) emit progress(checked, current);
 }
 
 void ShaderCheckRunner::ended(Lane &lane) {
     if (over) return;
-    read(lane);
+    read(lane); // (its signals may have run the event loop: look at the state as it is now)
+    if (over) return;
+    QString crashed;
     if (result.failure.isEmpty()) {
         if (lane.current >= 0) {
-            result.errors.insert(lane.paths.at(lane.current), "The OpenGL driver crashed while compiling this shader. "
-                                                               "Selecting it would close ISFLab.");
+            crashed = lane.paths.at(lane.current);
+            result.errors.insert(crashed, "The OpenGL driver crashed while compiling this shader. "
+                                          "Selecting it would close ISFLab.");
             ++result.crashes;
-            emit progress(++done, lane.paths.at(lane.current));
+            ++done;
             lane.completed = lane.current + 1;
         } else if (lane.completed < lane.paths.size()) {
             result.failure = "The shader check process stopped unexpectedly.";
@@ -125,12 +137,11 @@ void ShaderCheckRunner::ended(Lane &lane) {
     lane.current = -1;
     lane.completed = 0;
     lane.buffer.clear();
-    if (!result.failure.isEmpty()) {
-        stopAll();
-        finish();
-    } else if (lane.paths.isEmpty()) {
-        if (--running == 0) finish();
-    } else {
-        launch(lane); // the rest of its share, after the shader that crashed
-    }
+    const bool stop = !result.failure.isEmpty(), laneDone = lane.paths.isEmpty();
+    if (stop) stopAll();
+    else if (laneDone) --running;
+    else launch(lane); // the rest of its share, after the shader that crashed
+    const bool all = stop || (laneDone && running == 0);
+    if (!crashed.isEmpty()) emit progress(done, crashed);
+    if (all) finish();
 }

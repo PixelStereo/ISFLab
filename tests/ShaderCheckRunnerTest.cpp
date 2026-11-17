@@ -34,8 +34,11 @@ int fakeWorker(const QString &listFile) {
 }
 
 ShaderCheckRunner::Result run(const QStringList &paths, int lanes, const QStringList &args = {}, int cancelAfterMs = -1,
-                              const QString &program = {}) {
+                              const QString &program = {}, bool pump = false) {
     ShaderCheckRunner runner(paths);
+    // A modal progress dialog runs the event loop inside setValue(): progress must be safe to answer that way
+    if (pump)
+        QObject::connect(&runner, &ShaderCheckRunner::progress, &runner, [] { QCoreApplication::processEvents(); });
     runner.setLanes(lanes);
     runner.setWorker(program.isEmpty() ? QCoreApplication::applicationFilePath() : program, args.isEmpty() ? QStringList{"--fake-worker"} : args);
     QEventLoop loop;
@@ -86,6 +89,24 @@ int main(int argc, char **argv) {
         QStringList expected = paths;
         expected.sort();
         check(all == expected, "every shader is accounted for exactly once");
+    }
+
+    {
+        QStringList many;
+        for (int i = 0; i < 300; ++i) many << QString("/shaders/p%1.fs").arg(i);
+        many[50] = "/shaders/crash50.fs";
+        many[51] = "/shaders/bad51.fs";
+        many[200] = "/shaders/crash200.fs";
+        for (const int lanes : {1, 4}) {
+            const auto r = run(many, lanes, {}, -1, {}, true);
+            QStringList all = r.passed;
+            all << r.errors.keys();
+            all.sort();
+            QStringList expected = many;
+            expected.sort();
+            check(r.failure.isEmpty() && all == expected && r.crashes == 2,
+                  "answering progress with processEvents(), as a modal progress dialog does: every shader still counted once");
+        }
     }
 
     qputenv("SHADERCHECK_SLOW", "1");

@@ -212,10 +212,11 @@ void LibraryActions::checkShaders(const QStringList &paths) {
     QEventLoop loop;
     ShaderCheckRunner::Result outcome;
     bool over = false;
+    // Queued: setValue() on a modal dialog runs the event loop, which must not happen inside the runner's reading
     connect(&runner, &ShaderCheckRunner::progress, &progress, [&](int checked, const QString &current) {
         progress.setValue(checked);
         progress.setLabelText(QString("Compiling %1…").arg(QFileInfo(current).fileName()));
-    });
+    }, Qt::QueuedConnection);
     connect(&runner, &ShaderCheckRunner::finished, &loop, [&](const ShaderCheckRunner::Result &result) {
         outcome = result;
         over = true;
