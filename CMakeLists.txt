@@ -71,6 +71,7 @@ qt_add_executable(ISFLab WIN32 MACOSX_BUNDLE
     src/app/SourceEditor.h src/app/SourceEditor.cpp
     src/app/FindBar.h src/app/FindBar.cpp
     src/app/ShaderCheckWorker.h src/app/ShaderCheckWorker.cpp
+    src/app/ShaderCheckRunner.h src/app/ShaderCheckRunner.cpp
     src/app/HeaderInspector.h src/app/HeaderInspector.cpp
     src/app/DiagnosticsPanel.h src/app/DiagnosticsPanel.cpp
     src/app/UiHelpers.h
@@ -231,6 +232,15 @@ if(BUILD_TESTING)
     set_tests_properties(library PROPERTIES FIXTURES_SETUP exported_library)
     set_tests_properties(archive PROPERTIES FIXTURES_REQUIRED exported_library
         PASS_REGULAR_EXPRESSION "Transitions/Crossfade.fs")
+endif()
+
+if(BUILD_TESTING)
+    # The batch shader check's workers: parallel lanes, crash resume, cancel (no GPU needed: the worker is faked)
+    qt_add_executable(ISFLabShaderCheckTest tests/ShaderCheckRunnerTest.cpp src/app/ShaderCheckRunner.h src/app/ShaderCheckRunner.cpp)
+    target_include_directories(ISFLabShaderCheckTest PRIVATE src/app)
+    target_link_libraries(ISFLabShaderCheckTest PRIVATE Qt6::Core)
+    add_test(NAME shadercheck COMMAND ISFLabShaderCheckTest)
+    set_tests_properties(shadercheck PROPERTIES TIMEOUT 120)
 endif()
 
 option(ISFLAB_TEST_OPENGL "Run the preview test in a graphical session" OFF)

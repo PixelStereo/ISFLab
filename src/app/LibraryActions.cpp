@@ -1,10 +1,13 @@
 #include "LibraryActions.h"
-#include "ShaderCheckWorker.h"
+#include "ShaderCheckRunner.h"
 #include "UiHelpers.h"
 #include "ZipExport.h"
 #include <QCryptographicHash>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QEventLoop>
+#include <functional>
+#include <memory>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -205,73 +208,31 @@ void LibraryActions::checkShaders(const QStringList &paths) {
     progress.setWindowTitle(title);
     progress.setWindowModality(Qt::WindowModal);
     progress.setMinimumDuration(0);
-    QMap<QString, QString> errors;
-    QStringList passed;
-    int checked = 0, crashes = 0;
-    bool cancelled = false;
-    QString failure;
-    // Each worker process checks the remaining shaders. When the OpenGL driver crashes on one, that
-    // shader goes to ERR and a new worker resumes after it.
-    QStringList remaining = targets;
-    while (!remaining.isEmpty() && !cancelled && failure.isEmpty()) {
-        QTemporaryFile list;
-        if (!list.open() || list.write(remaining.join('\n').toUtf8()) < 0 || !list.flush()) {
-            failure = "Cannot write the list of shaders to check.";
-            break;
-        }
-        QProcess worker;
-        worker.setProcessChannelMode(QProcess::SeparateChannels);
-        worker.start(QCoreApplication::applicationFilePath(), {ShaderCheckWorkerFlag, list.fileName()});
-        if (!worker.waitForStarted()) {
-            failure = "Cannot start the shader check process: " + worker.errorString();
-            break;
-        }
-        qsizetype current = -1, completed = 0;
-        QByteArray buffer;
-        for (bool finished = false; !finished;) {
-            finished = worker.waitForFinished(50);
-            QCoreApplication::processEvents(); // keeps Cancel responsive during long compiles
-            buffer += worker.readAllStandardOutput();
-            for (qsizetype end; (end = buffer.indexOf('\n')) >= 0; buffer.remove(0, end + 1)) {
-                const auto line = buffer.left(end);
-                const auto fields = line.split(' ');
-                const auto index = fields.value(1).toLongLong();
-                if (line.startsWith("FAIL ")) failure = QString::fromUtf8(line.mid(5));
-                if (index < 0 || index >= remaining.size()) continue;
-                if (line.startsWith("BEGIN ")) {
-                    current = index;
-                    progress.setLabelText(QString("Compiling %1…").arg(QFileInfo(remaining.at(index)).fileName()));
-                } else if (line.startsWith("OK ") || line.startsWith("ERR ")) {
-                    if (line.startsWith("OK ")) passed << remaining.at(index);
-                    else errors.insert(remaining.at(index), QUrl::fromPercentEncoding(fields.value(2)));
-                    current = -1;
-                    completed = index + 1;
-                    progress.setValue(++checked);
-                }
-            }
-            if (progress.wasCanceled()) {
-                worker.kill();
-                worker.waitForFinished();
-                cancelled = true;
-                break;
-            }
-        }
-        if (cancelled || !failure.isEmpty()) break;
-        if (current >= 0) {
-            errors.insert(remaining.at(current), "The OpenGL driver crashed while compiling this shader. "
-                                                 "Selecting it would close ISFLab.");
-            ++crashes;
-            progress.setValue(++checked);
-            completed = current + 1;
-        } else if (completed < remaining.size()) {
-            failure = "The shader check process stopped unexpectedly.";
-            break;
-        }
-        remaining = remaining.mid(completed);
-    }
+    ShaderCheckRunner runner(targets);
+    QEventLoop loop;
+    ShaderCheckRunner::Result outcome;
+    bool over = false;
+    connect(&runner, &ShaderCheckRunner::progress, &progress, [&](int checked, const QString &current) {
+        progress.setValue(checked);
+        progress.setLabelText(QString("Compiling %1…").arg(QFileInfo(current).fileName()));
+    });
+    connect(&runner, &ShaderCheckRunner::finished, &loop, [&](const ShaderCheckRunner::Result &result) {
+        outcome = result;
+        over = true;
+        loop.quit();
+    });
+    connect(&progress, &QProgressDialog::canceled, &runner, &ShaderCheckRunner::cancel);
+    runner.start();
+    if (!over) loop.exec();
+    const auto &errors = outcome.errors;
+    const auto &passed = outcome.passed;
+    const int checked = runner.checked(), crashes = outcome.crashes;
+    const QString &failure = outcome.failure;
+    bool cancelled = outcome.cancelled;
+    progress.disconnect(&runner);
+    progress.setValue(int(targets.size()));
     if (!failure.isEmpty()) QMessageBox::warning(window, title, failure);
     cancelled |= progress.wasCanceled();
-    progress.setValue(int(targets.size()));
     bin->applyCheckResults(errors, passed);
 
     QMessageBox result(errors.isEmpty() ? QMessageBox::Information : QMessageBox::Warning, title,
