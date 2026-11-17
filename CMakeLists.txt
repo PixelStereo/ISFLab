@@ -6,16 +6,17 @@ if(DEFINED ISFLAB_TAG_VERSION)
 endif()
 project(ISFLab VERSION "${isflab_version}" LANGUAGES CXX)
 
-# Published tag builds carry the plain release number; every other build also carries the
-# short commit it was built from (for example 0.1.4_1a2b3c4d).
+# Published tag builds carry the plain release number ("0.2.1"); every other build also carries the commits since
+# that release ("0.2.1+3") and a trailing "+" when it has uncommitted changes ("0.2.1+3+").
 set(ISFLAB_DISPLAY_VERSION "${PROJECT_VERSION}")
 if(NOT DEFINED ISFLAB_TAG_VERSION AND NOT ISFLAB_RELEASE_BUILD)
-    execute_process(COMMAND git rev-parse --short=8 HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        OUTPUT_VARIABLE isflab_commit OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-    if(NOT isflab_commit MATCHES "^[0-9a-f]+$")
-        set(isflab_commit "unknown")
+    include(cmake/PixelStereoBuildId.cmake)
+    pxs_nearest_release("${CMAKE_CURRENT_SOURCE_DIR}" isflab_release)
+    if(NOT isflab_release STREQUAL "")
+        set(ISFLAB_DISPLAY_VERSION "${isflab_release}") # the tag the commits are counted from, even before VERSION catches up
     endif()
-    string(APPEND ISFLAB_DISPLAY_VERSION "_${isflab_commit}")
+    pxs_build_suffix("${CMAKE_CURRENT_SOURCE_DIR}" isflab_suffix)
+    string(APPEND ISFLAB_DISPLAY_VERSION "${isflab_suffix}")
     execute_process(COMMAND git symbolic-ref -q HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         OUTPUT_VARIABLE isflab_branch_ref OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
     foreach(isflab_ref HEAD ${isflab_branch_ref} packed-refs)
@@ -131,11 +132,11 @@ if(MSVC)
     target_compile_options(ISFLabEngine PRIVATE /utf-8)
     target_compile_options(ISFLabCore PRIVATE /utf-8)
 endif()
-# The application carries its version in its name ("ISFLab v0.1.5.app"), as NyxMap does.
+# The application carries its version in its name ("ISFLab 0.1.5.app"), as NyxMap does.
 # Linux keeps the plain executable name that the .desktop entry launches.
 # Qt's Windows deploy script cannot take a space in the executable name: on Windows the build keeps
-# ISFLab.exe and the CI renames it to "ISFLab v0.1.7.exe" once the install has deployed Qt.
-set(ISFLAB_APP_NAME "ISFLab v${ISFLAB_DISPLAY_VERSION}")
+# ISFLab.exe and the CI renames it to "ISFLab 0.1.7.exe" once the install has deployed Qt.
+set(ISFLAB_APP_NAME "ISFLab ${ISFLAB_DISPLAY_VERSION}")
 if(APPLE)
     set_target_properties(ISFLab PROPERTIES OUTPUT_NAME "${ISFLAB_APP_NAME}")
 endif()
