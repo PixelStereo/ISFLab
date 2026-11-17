@@ -126,6 +126,8 @@ jobs:
             Select-Object -First 1
           if (!$crt) { throw "Microsoft Visual C++ runtime DLLs are missing from the build environment" }
           Copy-Item (Join-Path $crt.FullName "*.dll") -Destination $bin -Force -ErrorAction Stop
+          # Nothing to install for the user: no Visual C++ redistributable installer in the package
+          Get-ChildItem package -Recurse -Filter "vc_redist*.exe" -ErrorAction SilentlyContinue | Remove-Item -Force
           $qtPlatform = Get-ChildItem package -Recurse -File -Filter qwindows.dll | Select-Object -First 1
           $appExe = "$appName.exe"
           foreach ($file in @($appExe, "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")) {
