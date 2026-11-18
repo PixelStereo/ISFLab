@@ -6,8 +6,14 @@ import re
 import sys
 
 
-# Release files carry the tag, as in NyxMap: ISFLab-macOS-arm64-v0.1.5.zip
+# Release files are <App>-<os>-<arch>-<tag>, as in every Pixel Stereo application: ISFLab-macos-arm64-v0.2.2.zip
 ASSETS = {
+    "macOS ARM64": "ISFLab-macos-arm64-{tag}.zip",
+    "Windows x64": "ISFLab-windows-x64-{tag}-Setup.exe",
+    "Linux x64": "ISFLab-linux-x64-{tag}.tar.gz",
+}
+# The names before <App>-<os>-<arch>-<tag> was the rule everywhere (capitalised system names)
+CAPITALISED = {
     "macOS ARM64": "ISFLab-macOS-arm64-{tag}.zip",
     "Windows x64": "ISFLab-Windows-x64-{tag}-Setup.exe",
     "Linux x64": "ISFLab-Linux-x64-{tag}.tar.gz",
@@ -27,7 +33,9 @@ def download_block(releases, repository):
                   if item.get("state") == "uploaded" and item.get("size", 0) > 0}
         names = {platform: name.format(tag=tag) for platform, name in ASSETS.items()}
         if any(name not in assets for name in names.values()):
-            names = {platform: name.replace("-{tag}", "").format(tag=tag) for platform, name in ASSETS.items()}  # releases before v0.1.5
+            names = {platform: name.format(tag=tag) for platform, name in CAPITALISED.items()}
+        if any(name not in assets for name in names.values()):
+            names = {platform: name.replace("-{tag}", "").format(tag=tag) for platform, name in CAPITALISED.items()}  # releases before v0.1.5
         urls = {platform: f"{base}/download/{tag}/{name}" for platform, name in names.items()}
         if any(assets.get(name) != urls[platform] for platform, name in names.items()):
             continue
