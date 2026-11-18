@@ -49,7 +49,6 @@ QIcon icon(Icon kind, const QColor &color) {
 void apply(QApplication &app) {
     // The graphite look shared by every Pixel Stereo application (palette, rounded sections, toggles); what follows is
     // this application's own structure, written with the same colour tokens
-    app.setStyle(QStyleFactory::create("Fusion"));
     pxs::apply(app, pxs::graphite(), QStringLiteral(R"(
 QMainWindow::separator { background:@midlight; width:1px; height:1px; }
 QToolBar#commandBar { background:@button; border:0; border-bottom:1px solid @midlight; spacing:6px; padding:7px 11px; }
@@ -100,12 +99,6 @@ QCheckBox::indicator { width:13px; height:13px; border:1px solid @border; border
 QCheckBox::indicator:checked { background:@fill; border:3px solid @midlight; width:9px; height:9px; }
 QTreeWidget#shaderTree { background:@base; border:1px solid @midlight; border-radius:6px; padding:4px 3px; outline:0; }
 QTreeWidget#shaderTree::item { border:0; }
-QTabWidget::pane { border:1px solid @border; border-radius:6px; }
-QTabBar::tab { background:@window; padding:5px 11px; margin-right:3px;
-               font-weight:600; border:1px solid @border; border-bottom:3px solid @midlight;
-               border-top-left-radius:4px; border-top-right-radius:4px; }
-QTabBar::tab:selected { background:@light; border-color:@border; border-bottom-color:@link; }
-QTabBar::tab:hover:!selected { background:@midlight; }
 QDockWidget { font-weight:600; color:@text; }
 QDockWidget::title { background:@button; padding:6px 10px; }
 QMenu { background:@button; color:@text; border:1px solid @border; }
