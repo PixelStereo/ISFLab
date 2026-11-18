@@ -13,9 +13,9 @@ A desktop app by **Pixel Stereo** for macOS, Windows and Linux.
 ## Download
 
 <!-- release-downloads:start -->
-**LATEST VERSION · [v0.3.0](https://github.com/PixelStereo/ISFLab/releases/tag/v0.3.0)**
+**LATEST VERSION · [v0.3.1](https://github.com/PixelStereo/ISFLab/releases/tag/v0.3.1)**
 
-[![macOS Apple Silicon](https://img.shields.io/badge/macOS-Apple_Silicon-6b7787?style=for-the-badge&logo=apple&logoColor=white&labelColor=1a1c20)](https://github.com/PixelStereo/ISFLab/releases/download/v0.3.0/ISFLab-macos-arm64-v0.3.0.zip)&nbsp;&nbsp;[![Windows Installer](https://img.shields.io/badge/Windows-Installer-2b6fb6?style=for-the-badge&logo=windows&logoColor=white&labelColor=1a1c20)](https://github.com/PixelStereo/ISFLab/releases/download/v0.3.0/ISFLab-windows-x64-v0.3.0-Setup.exe)&nbsp;&nbsp;[![Linux AppImage](https://img.shields.io/badge/Linux-Archive-b8821c?style=for-the-badge&logo=linux&logoColor=white&labelColor=1a1c20)](https://github.com/PixelStereo/ISFLab/releases/download/v0.3.0/ISFLab-linux-x64-v0.3.0.tar.gz)
+[![macOS Apple Silicon](https://img.shields.io/badge/macOS-Apple_Silicon-6b7787?style=for-the-badge&logo=apple&logoColor=white&labelColor=1a1c20)](https://github.com/PixelStereo/ISFLab/releases/download/v0.3.1/ISFLab-macos-arm64-v0.3.1.zip)&nbsp;&nbsp;[![macOS Intel](https://img.shields.io/badge/macOS-Intel-515b69?style=for-the-badge&logo=apple&logoColor=white&labelColor=1a1c20)](https://github.com/PixelStereo/ISFLab/releases/download/v0.3.1/ISFLab-macos-x64-v0.3.1.zip)&nbsp;&nbsp;[![Windows Installer](https://img.shields.io/badge/Windows-Installer-2b6fb6?style=for-the-badge&logo=windows&logoColor=white&labelColor=1a1c20)](https://github.com/PixelStereo/ISFLab/releases/download/v0.3.1/ISFLab-windows-x64-v0.3.1-Setup.exe)&nbsp;&nbsp;[![Linux AppImage](https://img.shields.io/badge/Linux-Archive-b8821c?style=for-the-badge&logo=linux&logoColor=white&labelColor=1a1c20)](https://github.com/PixelStereo/ISFLab/releases/download/v0.3.1/ISFLab-linux-x64-v0.3.1.tar.gz)
 <!-- release-downloads:end -->
 
 Starting with the next release, Windows x64 is distributed as a single installer that bundles the required runtime libraries and adds ISFLab to the Start menu.
