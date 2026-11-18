@@ -16,11 +16,18 @@ jobs:
         include:
           - runner: macos-latest
             artifact: macOS-arm64
+            arch: arm64
+          # The Intel build is attached to the release when it passes; it does not block the release when it fails
+          - runner: macos-15-intel
+            artifact: macOS-x64
+            arch: x64
+            optional: true
           - runner: windows-latest
             artifact: Windows-x64
           - runner: ubuntu-latest
             artifact: Linux-x64
     runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.optional || false }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -86,7 +93,8 @@ jobs:
           app_name="$(python3 -c 'import json; print(json.load(open("build-ci/application.json"))["name"])')"
           app="package/$app_name.app"
           exe="$app/Contents/MacOS/$app_name"
-          file "$exe" | grep -q arm64
+          want=arm64; if [[ "${{ matrix.arch }}" == x64 ]]; then want=x86_64; fi
+          file "$exe" | grep -q "$want"
           test -f "$app/Contents/PlugIns/platforms/libqcocoa.dylib"
           # ISFLab does not use PDF/SVG image plugins or the Qt virtual keyboard.
           rm -f "$app/Contents/PlugIns/imageformats/libqpdf.dylib" \
@@ -114,7 +122,7 @@ jobs:
           done < <(find "$app/Contents" -depth -type d \( -name '*.framework' -o -name '*.bundle' -o -name '*.app' \) -print0)
           codesign --force --sign - "$app"
           codesign --verify --deep --strict "$app"
-          ditto -c -k --keepParent "$app" "ISFLab-macos-arm64${TAG_SUFFIX}.zip"
+          ditto -c -k --keepParent "$app" "ISFLab-macos-${{ matrix.arch }}${TAG_SUFFIX}.zip"
       - name: Bundle Windows runtime DLLs alongside ISFLab
         if: runner.os == 'Windows'
         shell: pwsh
@@ -183,6 +191,8 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           assets=("release/ISFLab-macos-arm64-$RELEASE_TAG.zip" "release/ISFLab-windows-x64-$RELEASE_TAG-Setup.exe" "release/ISFLab-linux-x64-$RELEASE_TAG.tar.gz")
+          # The Intel zip, when its build passed
+          if [ -s "release/ISFLab-macos-x64-$RELEASE_TAG.zip" ]; then assets+=("release/ISFLab-macos-x64-$RELEASE_TAG.zip"); fi
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
             gh release edit "$RELEASE_TAG" --draft=false
