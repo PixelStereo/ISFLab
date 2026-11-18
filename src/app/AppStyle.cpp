@@ -94,9 +94,6 @@ QLineEdit, QAbstractSpinBox, QPlainTextEdit, QComboBox {
 QLineEdit, QComboBox { padding:4px 6px; }
 QLineEdit#sliderNumber { padding:0 6px; }
 QLineEdit:focus, QAbstractSpinBox:focus, QPlainTextEdit:focus, QComboBox:focus { border-color:@focus; }
-QCheckBox { spacing:7px; }
-QCheckBox::indicator { width:13px; height:13px; border:1px solid @border; border-radius:3px; background:@window; }
-QCheckBox::indicator:checked { background:@fill; border:3px solid @midlight; width:9px; height:9px; }
 QTreeWidget#shaderTree { background:@base; border:1px solid @midlight; border-radius:6px; padding:4px 3px; outline:0; }
 QTreeWidget#shaderTree::item { border:0; }
 QDockWidget { font-weight:600; color:@text; }
