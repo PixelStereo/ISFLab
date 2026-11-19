@@ -243,6 +243,77 @@ int main(int argc, char **argv) {
         bigBin.reload({}); // nothing to read
         check(bigSignals == 2 && big.reloaded == 0, "reloading nothing still answers");
     }
+
+    {
+        // Tags: collections the user makes, kept by the app
+        MediaBin tagBin;
+        tagBin.resize(400, 700);
+        tagBin.show();
+        tagBin.addFiles(shaderFiles(d + "/a") + shaderFiles(d + "/b"), d);
+        auto *tagTree = tagBin.findChild<QTreeWidget *>();
+        const auto wave = d + "/a/WaveGen.fs", plain = d + "/a/Plain.fs", blur = d + "/b/Blur.fs", plainB = d + "/b/Plain.fs";
+        int changes = 0;
+        QObject::connect(&tagBin, &MediaBin::tagsChanged, &tagBin, [&] { ++changes; });
+        const auto everything = shown(tagTree);
+        check(tagBin.tags().isEmpty() && tagBin.shownTag().isEmpty(), "a new bin has no tags");
+
+        tagBin.setTag({wave, blur}, "Favorites", true);
+        check(tagBin.tags() == QStringList{"Favorites"} && tagBin.tagCount("Favorites") == 2 && changes == 1, "a tag is made by tagging");
+        tagBin.setTag({plain}, " favorites ", true);
+        check(tagBin.tags() == QStringList{"Favorites"} && tagBin.tagCount("Favorites") == 3,
+              "names are unique whatever their case and spaces: the existing tag is used");
+        check(tagBin.tagsOf(wave) == QStringList{"Favorites"} && tagBin.tagsOf(plainB).isEmpty(), "what a shader has");
+        check(tagBin.shaders().contains(wave) && tagBin.findChild<QTreeWidget *>()->topLevelItemCount() > 0, "tagging leaves the shaders alone");
+
+        tagBin.showTag("Favorites");
+        check(tagBin.shownTag() == "Favorites" && shown(tagTree) == QStringList({"Blur.fs", "Plain.fs", "WaveGen.fs"}),
+              "showing a tag lists only its shaders");
+        search->clear();
+        tagBin.setTag({plain}, "Favorites", false);
+        check(shown(tagTree) == QStringList({"Blur.fs", "WaveGen.fs"}), "untagging takes a shader out of what is shown");
+        tagBin.setTag({plain}, "Favorites", true);
+        tagBin.showTag({});
+        check(shown(tagTree) == everything, "showing no tag lists everything again");
+
+        tagBin.setTag({blur, plainB}, "Blurry", true);
+        tagBin.renameTag("Blurry", "favorites"); // onto an existing tag: the two become one
+        check(tagBin.tags() == QStringList{"Favorites"} && tagBin.tagCount("Favorites") == 4, "renaming onto a tag merges them");
+        tagBin.renameTag("Favorites", "Best");
+        check(tagBin.tags() == QStringList{"Best"} && tagBin.tagCount("Best") == 4, "a tag can be renamed");
+        const auto tip = tagBin.findChild<QTreeWidget *>()->topLevelItem(0);
+        check(tip != nullptr, "the list has rows");
+        bool tooltipSeen = false;
+        for (QTreeWidgetItemIterator it(tagTree); *it; ++it)
+            tooltipSeen |= (*it)->toolTip(0).contains("Tags: Best");
+        check(tooltipSeen, "a tagged shader says so in its tooltip");
+
+        // saved with the session and read back
+        QTemporaryDir settingsDir;
+        QSettings saved(settingsDir.filePath("tags.ini"), QSettings::IniFormat);
+        tagBin.showTag("Best");
+        tagBin.saveSession(saved);
+        saved.sync();
+        {
+            MediaBin again;
+            again.show();
+            QSettings read(settingsDir.filePath("tags.ini"), QSettings::IniFormat);
+            again.restoreSession(read);
+            check(again.tags() == QStringList{"Best"} && again.tagsOf(wave) == QStringList{"Best"} && again.shownTag() == "Best",
+                  "tags and the shown tag come back with the session");
+        }
+
+        tagBin.forget({plainB});
+        check(tagBin.tagCount("Best") == 3 && tagBin.tagsOf(plainB).isEmpty(), "a forgotten shader leaves its tags");
+        tagBin.deleteTag("Best");
+        check(tagBin.tags().isEmpty() && tagBin.shownTag().isEmpty() && shown(tagTree).size() == everything.size() - 1,
+              "deleting the shown tag shows everything and keeps the shaders");
+        tagBin.setTag({wave}, "Solo", true);
+        tagBin.showTag("Solo");
+        tagBin.setTag({wave}, "Solo", false);
+        check(tagBin.tags().isEmpty() && tagBin.shownTag().isEmpty(), "a tag with no shader is gone, and so is its filter");
+        tagBin.showTag("Nothing");
+        check(tagBin.shownTag().isEmpty(), "showing a tag that does not exist shows everything");
+    }
     if (failures == 0) std::printf("ALL OK\n");
     return failures ? 1 : 0;
 }

@@ -151,6 +151,10 @@ void MainWindow::connectPanels() {
     connect(bin, &MediaBin::checkRequested, actions, &LibraryActions::checkShaders);
     connect(bin, &MediaBin::reloadRequested, this, &MainWindow::reloadShaders);
     connect(bin, &MediaBin::reloaded, this, &MainWindow::shadersReloaded);
+    connect(bin, &MediaBin::tagsChanged, this, [this] { // the user's work: kept at once, not only when the window closes
+        QSettings settings;
+        bin->saveTags(settings);
+    });
     connect(bin, &MediaBin::clearRequested, this, [this] {
         if (!resolveChanges()) return;
         bin->clear();

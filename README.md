@@ -5,7 +5,7 @@
 **Browse, preview and edit ISF shaders.**
 A desktop app by **Pixel Stereo** for macOS, Windows and Linux.
 
-- **Browse** generators, filters and transitions by name, type or category.
+- **Browse** generators, filters and transitions by name, type or category, and make your own collections with tags (right-click a shader, Tags).
 - **Preview** filters with an animated test card and transitions with looping **BEFORE / AFTER** cards. Use your own images, ISF generators or live feeds via Syphon, Spout or GStreamer shared memory.
 - **Edit** GLSL alongside a visual editor for inputs and passes. Save your preview settings as shader defaults.
 - **Export** filtered shaders to a folder or ZIP with their vertex shaders, images and relative paths intact.
