@@ -13,6 +13,7 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSettings;
+class QMenu;
 class QThread;
 class QToolButton;
 class QTreeWidget;
@@ -70,8 +71,20 @@ public:
     // Results of a batch check: shaders in errors move to ERR, those in passed leave it.
     void applyCheckResults(const QMap<QString, QString> &errors, const QStringList &passed);
 
+    // Tags: collections of shaders the user makes. They belong to the app, not to the shader files, and a shader
+    // can have several. Showing a tag lists only its shaders. Names are unique whatever their case.
+    QStringList tags() const;                          // sorted
+    QStringList tagsOf(const QString &path) const;
+    int tagCount(const QString &tag) const;            // shaders of the bin that have it
+    void setTag(const QStringList &paths, const QString &tag, bool on);
+    void renameTag(const QString &from, const QString &to); // onto an existing tag: the two become one
+    void deleteTag(const QString &tag);                // the shaders stay, only the tag goes
+    void showTag(const QString &tag);                  // empty: all shaders
+    QString shownTag() const { return shownTagName; }
+
     void restoreSession(const QSettings &settings);
     void saveSession(QSettings &settings) const;
+    void saveTags(QSettings &settings) const;
 
 public slots:
     // Rebuilds the list: rows, their data and the categories, then applies the filters. For what changes the shaders;
@@ -81,6 +94,7 @@ public slots:
     void applyFilter();
 
 signals:
+    void tagsChanged(); // the tags or the shown tag changed: worth saving
     void reloaded(const MediaBin::ReloadReport &report);
     void reloadRequested(const QStringList &paths);
     void activationRequested(const QString &path);
@@ -93,6 +107,8 @@ signals:
 
 private:
     void showContextMenu(const QPoint &position);
+    void fillTagMenu(QMenu *menu);
+    QString existingTag(const QString &name) const; // the tag called that (any case), or the name trimmed
     // What the filters read of a shader, worked out once (not on every keystroke)
     struct Cached {
         QString foldedName;
@@ -100,6 +116,7 @@ private:
         QString tooltip;
     };
     const Cached &cached(const ShaderEntry &entry) const;
+    QString toolTipOf(const ShaderEntry &entry) const; // path, categories and tags
     void updateRow(const QString &path); // after a preview error came or went: its kind, badge and tooltip only
 
     // What applyFilter walks, built by refresh(): every shader with its row and cache, so that a pass over thousands of
@@ -152,7 +169,9 @@ private:
     QPushButton *allTypes;
     QVBoxLayout *categoryItems;
     QMap<QString, QCheckBox *> categoryChecks;
-    QToolButton *categoryButton;
+    QToolButton *categoryButton, *tagButton;
+    QMap<QString, QSet<QString>> tagPaths; // tag -> shader paths
+    QString shownTagName;
     QSet<QString> uncheckedCategories;
     QStringList categoryNames;
     QLineEdit *search, *categorySearch;

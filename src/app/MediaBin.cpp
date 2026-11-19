@@ -14,6 +14,9 @@
 #include <QMenu>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QInputDialog>
+#include <QActionGroup>
+#include <QMessageBox>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QThread>
@@ -73,6 +76,14 @@ MediaBin::MediaBin(QWidget *parent) : QWidget(parent) {
         (info.primary ? typeLayout : otherTypes)->addWidget(tab, 1);
         connect(tab, &QPushButton::toggled, this, &MediaBin::applyFilter);
     }
+    tagButton = new QToolButton;
+    tagButton->setText("Tag: all");
+    tagButton->setToolTip("Show one of your tags: collections of shaders you make from the right-click menu");
+    tagButton->setPopupMode(QToolButton::InstantPopup);
+    tagButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto *tagMenu = new QMenu(tagButton);
+    tagButton->setMenu(tagMenu);
+    connect(tagMenu, &QMenu::aboutToShow, this, [this, tagMenu] { fillTagMenu(tagMenu); });
     categoryButton = new QToolButton;
     categoryButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
     categoryButton->setCheckable(true);
@@ -152,7 +163,7 @@ MediaBin::MediaBin(QWidget *parent) : QWidget(parent) {
         tree->setRootIsDecorated(!enabled);
         refresh();
     });
-    for (auto *widget : QList<QWidget *>{search, typeRow, categoryButton, categoryPanel}) left->addWidget(widget);
+    for (auto *widget : QList<QWidget *>{search, typeRow, tagButton, categoryButton, categoryPanel}) left->addWidget(widget);
     auto *binOptions = new QHBoxLayout;
     binOptions->addWidget(count, 1);
     auto *binSettings = new QToolButton;
@@ -250,6 +261,22 @@ void MediaBin::showContextMenu(const QPoint &position) {
     menu.addAction("Reload from Disk", this, [this, paths] { emit reloadRequested(paths); });
     menu.addAction("Check Selected", this, [this, paths] { emit checkRequested(paths); });
     menu.addSeparator();
+    auto *tagMenu = menu.addMenu("Tags");
+    for (const auto &tag : tags()) {
+        const auto &have = tagPaths.value(tag);
+        auto *action = tagMenu->addAction(tag);
+        action->setCheckable(true);
+        action->setChecked(std::all_of(paths.cbegin(), paths.cend(), [&](const QString &path) { return have.contains(path); }));
+        connect(action, &QAction::triggered, this, [this, paths, tag](bool on) { setTag(paths, tag, on); });
+    }
+    if (!tagPaths.isEmpty()) tagMenu->addSeparator();
+    tagMenu->addAction("New Tag…", this, [this, paths] {
+        bool ok = false;
+        const auto name = QInputDialog::getText(this, "New Tag", paths.size() == 1 ? "Tag this shader as:" :
+                              QString("Tag these %1 shaders as:").arg(paths.size()), QLineEdit::Normal, {}, &ok);
+        if (ok && !name.trimmed().isEmpty()) setTag(paths, name, true);
+    });
+    menu.addSeparator();
     menu.addAction("Copy to Folder…", this, [this, paths] { emit fileActionRequested(paths, FileAction::Copy); });
     menu.addAction("Move to Folder…", this, [this, paths] { emit fileActionRequested(paths, FileAction::Move); });
 #ifdef Q_OS_MACOS
@@ -315,6 +342,14 @@ void MediaBin::forget(const QStringList &paths) {
         cache.remove(path);
         if (active == path) active.clear();
     }
+    bool tagsLost = false;
+    for (auto it = tagPaths.begin(); it != tagPaths.end();) {
+        for (const auto &path : paths) it->remove(path);
+        if (it->isEmpty()) { tagsLost = true; it = tagPaths.erase(it); }
+        else ++it;
+    }
+    if (tagsLost && !tagPaths.contains(shownTagName)) shownTagName.clear();
+    if (tagsLost) emit tagsChanged();
     categoriesDirty = true;
     refsDirty = true;
     refresh();
@@ -468,6 +503,14 @@ void MediaBin::restoreSession(const QSettings &settings) {
     }
     const auto disabledCategories = settings.value(SettingsKeys::BinDisabledCategories).toStringList();
     uncheckedCategories = QSet<QString>(disabledCategories.cbegin(), disabledCategories.cend());
+    const auto savedTags = settings.value(SettingsKeys::BinTags).toMap();
+    tagPaths.clear();
+    for (auto it = savedTags.cbegin(); it != savedTags.cend(); ++it) {
+        const auto paths = it.value().toStringList();
+        if (!it.key().isEmpty() && !paths.isEmpty()) tagPaths.insert(it.key(), QSet<QString>(paths.cbegin(), paths.cend()));
+    }
+    shownTagName = tagPaths.contains(settings.value(SettingsKeys::BinShownTag).toString())
+                       ? settings.value(SettingsKeys::BinShownTag).toString() : QString();
     {
         const QSignalBlocker blocker(search);
         search->setText(settings.value(SettingsKeys::BinNameFilter).toString());
@@ -584,6 +627,14 @@ void MediaBin::saveSession(QSettings &settings) const {
     settings.setValue(SettingsKeys::BinDisabledTypes, disabledTypes);
     settings.setValue(SettingsKeys::BinDisabledCategories, QStringList(uncheckedCategories.values()));
     settings.setValue(SettingsKeys::BinNameFilter, search->text());
+    saveTags(settings);
+}
+
+void MediaBin::saveTags(QSettings &settings) const {
+    QVariantMap saved;
+    for (auto it = tagPaths.cbegin(); it != tagPaths.cend(); ++it) saved.insert(it.key(), QStringList(it.value().values()));
+    settings.setValue(SettingsKeys::BinTags, saved);
+    settings.setValue(SettingsKeys::BinShownTag, shownTagName);
 }
 
 ISFType MediaBin::binType(const ShaderEntry &entry) const {
@@ -604,8 +655,12 @@ const MediaBin::Cached &MediaBin::cached(const ShaderEntry &entry) const {
 
 bool MediaBin::matches(const ShaderEntry &entry) const { return passes(entry, binType(entry), cached(entry)); }
 
-bool MediaBin::passes(const ShaderEntry &, ISFType kind, const Cached &c) const {
+bool MediaBin::passes(const ShaderEntry &entry, ISFType kind, const Cached &c) const {
     if (!typeTabs.value(kind)->isChecked()) return false;
+    if (!shownTagName.isEmpty()) {
+        const auto tagged = tagPaths.constFind(shownTagName);
+        if (tagged != tagPaths.cend() && !tagged->contains(entry.path)) return false;
+    }
     if (!uncheckedCategories.isEmpty()) {
         bool checked = false;
         if (c.categoryKeys.isEmpty()) checked = !uncheckedCategories.contains(QString());
@@ -633,6 +688,7 @@ void MediaBin::applyFilter() {
     if (refsDirty) rebuildRefs();
     categoryButton->setText(uncheckedCategories.isEmpty() ? "Categories: all" :
         QString("Categories: %1 of %2").arg(categoryNames.size() - uncheckedCategories.size()).arg(categoryNames.size()));
+    tagButton->setText(shownTagName.isEmpty() ? "Tag: all" : "Tag: " + shownTagName);
     bool all = true;
     for (auto *tab : typeTabs) all &= tab->isChecked();
     allTypes->setChecked(all);
@@ -764,7 +820,7 @@ void MediaBin::refresh() {
         item->setData(1, AppStyle::KindRole, int(kind));
         item->setText(1, shaderTypeInfo(kind).badge);
         item->setToolTip(1, previewErrors.value(entry.path, ISFScanner::typeToString(kind)));
-        item->setToolTip(0, c.tooltip);
+        item->setToolTip(0, toolTipOf(entry));
     }
     if (inserted) tree->sortItems(0, Qt::AscendingOrder);
     refsDirty = true; // its rows are all there now: applyFilter() builds what it walks
@@ -788,5 +844,125 @@ void MediaBin::rebuildRefs() {
             groupKeys << group;
         }
         refs.push_back({&it.value(), item, &cached(it.value()), index.value()});
+    }
+}
+
+// ---- Tags
+
+QString MediaBin::existingTag(const QString &name) const {
+    const auto trimmed = name.simplified();
+    for (auto it = tagPaths.cbegin(); it != tagPaths.cend(); ++it)
+        if (it.key().compare(trimmed, Qt::CaseInsensitive) == 0) return it.key();
+    return trimmed;
+}
+
+QStringList MediaBin::tags() const {
+    QStringList names = tagPaths.keys();
+    names.sort(Qt::CaseInsensitive);
+    return names;
+}
+
+QStringList MediaBin::tagsOf(const QString &path) const {
+    QStringList names;
+    for (auto it = tagPaths.cbegin(); it != tagPaths.cend(); ++it)
+        if (it->contains(path)) names << it.key();
+    names.sort(Qt::CaseInsensitive);
+    return names;
+}
+
+int MediaBin::tagCount(const QString &tag) const {
+    int count = 0;
+    for (const auto &path : tagPaths.value(tag)) count += entries.contains(path) || pendingRestore.contains(path);
+    return count;
+}
+
+QString MediaBin::toolTipOf(const ShaderEntry &entry) const {
+    const auto owned = tagsOf(entry.path);
+    return cached(entry).tooltip + (owned.isEmpty() ? QString() : "\nTags: " + owned.join(", "));
+}
+
+void MediaBin::setTag(const QStringList &paths, const QString &name, bool on) {
+    const auto tag = existingTag(name);
+    if (tag.isEmpty() || paths.isEmpty()) return;
+    if (on) {
+        auto &set = tagPaths[tag];
+        for (const auto &path : paths) set.insert(path);
+    } else if (auto it = tagPaths.find(tag); it != tagPaths.end()) {
+        for (const auto &path : paths) it->remove(path);
+        if (it->isEmpty()) {
+            tagPaths.erase(it);
+            if (shownTagName == tag) shownTagName.clear();
+        }
+    }
+    for (const auto &path : paths)
+        if (auto *row = rows.value(path); row && entries.contains(path)) row->setToolTip(0, toolTipOf(entries.value(path)));
+    applyFilter();
+    emit tagsChanged();
+}
+
+void MediaBin::renameTag(const QString &from, const QString &name) {
+    const auto to = existingTag(name);
+    if (to.isEmpty() || !tagPaths.contains(from) || to == from) return;
+    tagPaths[to].unite(tagPaths.take(from)); // onto another tag: the two become one
+    if (shownTagName == from) shownTagName = to;
+    for (const auto &path : tagPaths.value(to))
+        if (auto *row = rows.value(path); row && entries.contains(path)) row->setToolTip(0, toolTipOf(entries.value(path)));
+    applyFilter();
+    emit tagsChanged();
+}
+
+void MediaBin::deleteTag(const QString &tag) {
+    const auto paths = tagPaths.take(tag);
+    if (paths.isEmpty() && shownTagName != tag) return;
+    if (shownTagName == tag) shownTagName.clear();
+    for (const auto &path : paths)
+        if (auto *row = rows.value(path); row && entries.contains(path)) row->setToolTip(0, toolTipOf(entries.value(path)));
+    applyFilter();
+    emit tagsChanged();
+}
+
+void MediaBin::showTag(const QString &tag) {
+    const auto wanted = tagPaths.contains(tag) ? tag : QString();
+    if (wanted == shownTagName) return;
+    shownTagName = wanted;
+    applyFilter();
+    emit tagsChanged();
+}
+
+// The menu of the Tag button: which tag to show, and how to rename or delete one
+void MediaBin::fillTagMenu(QMenu *menu) {
+    menu->clear();
+    auto *choice = new QActionGroup(menu);
+    auto *all = menu->addAction("All Shaders");
+    all->setCheckable(true);
+    all->setChecked(shownTagName.isEmpty());
+    choice->addAction(all);
+    connect(all, &QAction::triggered, this, [this] { showTag({}); });
+    const auto names = tags();
+    for (const auto &tag : names) {
+        auto *action = menu->addAction(QString("%1  (%2)").arg(tag).arg(tagCount(tag)));
+        action->setCheckable(true);
+        action->setChecked(tag == shownTagName);
+        choice->addAction(action);
+        connect(action, &QAction::triggered, this, [this, tag] { showTag(tag); });
+    }
+    if (names.isEmpty()) {
+        auto *hint = menu->addAction("No tags yet: right-click a shader, Tags, New Tag…");
+        hint->setEnabled(false);
+        return;
+    }
+    menu->addSeparator();
+    auto *rename = menu->addMenu("Rename Tag");
+    auto *remove = menu->addMenu("Delete Tag");
+    for (const auto &tag : names) {
+        connect(rename->addAction(tag), &QAction::triggered, this, [this, tag] {
+            bool ok = false;
+            const auto name = QInputDialog::getText(this, "Rename Tag", "New name:", QLineEdit::Normal, tag, &ok);
+            if (ok && !name.trimmed().isEmpty()) renameTag(tag, name);
+        });
+        connect(remove->addAction(tag), &QAction::triggered, this, [this, tag] {
+            if (QMessageBox::question(this, "Delete Tag", QString("Delete the tag “%1”? Its %2 shader(s) stay in the bin.")
+                                          .arg(tag).arg(tagCount(tag))) == QMessageBox::Yes) deleteTag(tag);
+        });
     }
 }
