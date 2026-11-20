@@ -1,6 +1,7 @@
 #pragma once
 #include "LiveInput.h"
 #include "MaterialGenerators.h"
+#include "OutputManager.h"
 #include <QElapsedTimer>
 #include <QHash>
 #include <QImage>
@@ -61,6 +62,8 @@ public:
     void setLiveInput(std::unique_ptr<LiveInput> input);
     void setShaderInput(const QString &name, const QByteArray &source, const QJsonObject &header, const QString &path);
     void setImage(const QString &name, const QImage &image);
+    // The video outputs (Syphon, Spout, virtual webcam, OMT), disabled until the user enables them.
+    OutputManager &outputs() { return outputManager; }
 signals:
     // compiled is true when the preview renders; otherwise message explains why it does not.
     void status(const QString &message, bool compiled);
@@ -101,6 +104,8 @@ private:
     QSize fixedRenderSize;
     std::unique_ptr<QOpenGLFramebufferObject> fixedOutput;
     bool fixedOutputError = false;
+    bool outputTargetFailed = false;
+    OutputManager outputManager;
     QString bufferError;
     bool resetHistory = true;
     QElapsedTimer clock, videoClock, materialClock;

@@ -1,7 +1,8 @@
 #define GL_SILENCE_DEPRECATION
 #import <OpenGL/OpenGL.h>
-#import <Syphon/SyphonOpenGLServer.h>
 #include "LiveInput.h"
+#include "OutputManager.h"
+#include <QOpenGLFramebufferObject>
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QOpenGLFunctions>
@@ -26,8 +27,8 @@ public:
         if (isValid()) {
             makeCurrent();
             receiver.reset();
-            [server stop];
-            server = nil;
+            outputs.release();
+            source.reset();
             doneCurrent();
         }
     }
@@ -35,8 +36,12 @@ public:
 protected:
     void initializeGL() override {
         initializeOpenGLFunctions();
-        server = [[SyphonOpenGLServer alloc] initWithName:name.toNSString()
-                                               context:CGLGetCurrentContext() options:nil];
+        // The Syphon output of the application: the texture of an offscreen picture, upright (red above blue)
+        OutputSettings settings;
+        settings.name = name;
+        outputs.setSettings(settings);
+        outputs.setEnabled(OutputKind::Syphon, true);
+        source = std::make_unique<QOpenGLFramebufferObject>(QSize(64, 32));
     }
 
     void paintGL() override {
@@ -45,14 +50,21 @@ protected:
         if (done) return;
         if (clock.elapsed() > 8000) {
             finish(false, QString("server created: %1; discovered: %2; attached: %3")
-                   .arg(server ? "yes" : "no", receiver ? "yes" : "no", [server hasClients] ? "yes" : "no"));
+                   .arg(outputs.state(OutputKind::Syphon).level == OutputManager::State::Ok ? "yes" : "no",
+                        receiver ? "yes" : "no", outputs.state(OutputKind::Syphon).receivers > 0 ? "yes" : "no"));
             return;
         }
-        if ([server bindToDrawFrameOfSize:NSMakeSize(64, 32)]) {
-            glClearColor(32 / 255.f, 128 / 255.f, 240 / 255.f, 1.f);
-            glClear(GL_COLOR_BUFFER_BIT);
-            [server unbindAndPublish];
-        }
+        source->bind();
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(0, 16, 64, 16);
+        glClearColor(1.f, 0.f, 0.f, 1.f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glScissor(0, 0, 64, 16);
+        glClearColor(0.f, 0.f, 1.f, 1.f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDisable(GL_SCISSOR_TEST);
+        source->release();
+        outputs.publish(source->handle(), source->texture(), source->size(), defaultFramebufferObject());
         if (!receiver) {
             auto discovery = createLiveInput({});
             for (const auto &sender : discovery->senders())
@@ -64,17 +76,16 @@ protected:
         if (!receiver) return;
         const auto image = receiver->frame(defaultFramebufferObject());
         if (!image.isNull()) {
-            const auto color = image.pixelColor(0, 0);
-            finish(image.size() == QSize(64, 32) && qAbs(color.red() - 32) < 3 &&
-                   qAbs(color.green() - 128) < 3 && qAbs(color.blue() - 240) < 3,
-                   QString("size %1x%2; color %3").arg(image.width()).arg(image.height()).arg(color.name()));
+            const auto top = image.pixelColor(10, 4), bottom = image.pixelColor(10, 28);
+            finish(image.size() == QSize(64, 32) && top.red() > 250 && top.blue() < 5 && bottom.blue() > 250 && bottom.red() < 5,
+                   QString("size %1x%2; top %3, bottom %4").arg(image.width()).arg(image.height()).arg(top.name(), bottom.name()));
         }
     }
 private:
     void finish(bool success, const QString &details) {
         done = true;
         passed = success;
-        status->setText(success ? "PASS: Syphon sender discovered and pixels received."
+        status->setText(success ? "PASS: the Syphon output is discovered and its pixels are received, upright."
                                 : "FAIL: " + details);
         if (automated) QTimer::singleShot(0, qApp, [success] { QCoreApplication::exit(success ? 0 : 1); });
         else update();
@@ -83,7 +94,8 @@ private:
     bool automated, done = false, passed = false;
     QString name;
     QElapsedTimer clock;
-    SyphonOpenGLServer *server = nil;
+    OutputManager outputs;
+    std::unique_ptr<QOpenGLFramebufferObject> source;
     std::unique_ptr<LiveInput> receiver;
 };
 

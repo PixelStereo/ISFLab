@@ -51,6 +51,7 @@ void ShaderEngine::release() {
     textures.clear();
     renderPasses.clear();
     fixedOutput.reset();
+    outputManager.release();
     program.reset();
     if (vao) {
         QOpenGLContext::currentContext()->extraFunctions()->glDeleteVertexArrays(1, &vao);
@@ -334,6 +335,7 @@ void ShaderEngine::initialize() {
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
     dirty = imagesDirty = true;
     fixedOutputError = false;
+    outputTargetFailed = false;
     videoClock.invalidate();
 }
 
@@ -764,7 +766,11 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
         return;
     }
     constexpr qint64 bufferBudget = 256LL * 1024 * 1024;
-    qint64 bytes = fixedRenderSize.isEmpty() ? 0 : qint64(size.width()) * size.height() * 4;
+    // The picture is rendered into a target of its own when its size is fixed, or when an output shares it: the
+    // outputs then read the texture (the widget's framebuffer has none). Nothing changes while no output is enabled.
+    const bool shared = outputManager.active() && !outputTargetFailed && fixedRenderSize.isEmpty();
+    const bool offscreen = !fixedRenderSize.isEmpty() || shared;
+    qint64 bytes = offscreen ? qint64(size.width()) * size.height() * 4 : 0;
     std::vector<QSize> passSizes;
     for (const auto &pass : renderPasses) {
         const QSize passSize(pass.target.isEmpty() ? size : QSize(dimension(pass.width, size.width()),
@@ -786,7 +792,7 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
         bufferError.clear();
         reportCompiled();
     }
-    if (fixedOutput && (fixedRenderSize.isEmpty() || fixedOutput->size() != size)) fixedOutput.reset();
+    if (fixedOutput && (!offscreen || fixedOutput->size() != size)) fixedOutput.reset();
     // Release all obsolete buffers before allocating replacements.
     for (size_t i = 0; i < renderPasses.size(); ++i) {
         auto &pass = renderPasses[i];
@@ -795,18 +801,24 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
             pass.write.reset();
         }
     }
-    if (!fixedRenderSize.isEmpty() && !fixedOutput) {
+    if (offscreen && !fixedOutput) {
         if (fixedOutputError) return;
-        if (QOpenGLFramebufferObject::hasOpenGLFramebufferBlit())
+        if (QOpenGLFramebufferObject::hasOpenGLFramebufferBlit() && size.width() <= textureLimit && size.height() <= textureLimit)
             fixedOutput = std::make_unique<QOpenGLFramebufferObject>(size);
         glBindFramebuffer(GL_FRAMEBUFFER, screen);
         if (!fixedOutput || !fixedOutput->isValid()) {
             fixedOutput.reset();
-            fixedOutputError = true;
-            reportError("Fixed resolution unavailable. Try a smaller size or switch to Auto.");
-            return;
+            if (shared) { // the preview keeps rendering to the screen, the outputs get nothing
+                outputTargetFailed = true;
+                qWarning("ISFLab: no offscreen render target for the video outputs.");
+            } else {
+                fixedOutputError = true;
+                reportError("Fixed resolution unavailable. Try a smaller size or switch to Auto.");
+                return;
+            }
+        } else if (!shared) {
+            reportCompiled();
         }
-        reportCompiled();
     }
 
     if (imagesDirty && !createTextures()) return;
@@ -923,6 +935,8 @@ void ShaderEngine::render(GLuint screen, const QSize &viewportSize) {
     program->disableAttributeArray(position);
     if (vao) QOpenGLContext::currentContext()->extraFunctions()->glBindVertexArray(0);
     program->release();
+    if (fixedOutput && outputManager.active()) // the picture as rendered, before it is fitted on the screen
+        outputManager.publish(fixedOutput->handle(), fixedOutput->texture(), size, screen);
     if (fixedOutput) {
         const QSize fitted = size.scaled(viewportSize, Qt::KeepAspectRatio);
         const QRect destination(QPoint((viewportSize.width() - fitted.width()) / 2,

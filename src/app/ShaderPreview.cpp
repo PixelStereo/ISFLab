@@ -78,6 +78,7 @@ ShaderPreview::ShaderPreview(QWidget *parent) : QOpenGLWidget(parent) {
     connect(&engine, &ShaderEngine::testCardActiveChanged, this, &ShaderPreview::testCardActiveChanged);
     connect(&engine, &ShaderEngine::shaderInputError, this, &ShaderPreview::shaderInputError);
     connect(&engine, &ShaderEngine::timeChanged, this, &ShaderPreview::timeChanged);
+    connect(&engine.outputs(), &OutputManager::stateChanged, this, &ShaderPreview::outputStateChanged);
     audioDeviceId = QSettings().value(SettingsKeys::AudioInputDevice).toByteArray();
     auto *devices = new QMediaDevices(this);
     connect(devices, &QMediaDevices::audioInputsChanged, this, &ShaderPreview::syncAudio);
@@ -328,6 +329,14 @@ void ShaderPreview::setShaderInput(const QString &name, const QByteArray &source
 
 void ShaderPreview::setImage(const QString &name, const QImage &image) {
     changeEngine([&] { engine.setImage(name, image); });
+}
+
+void ShaderPreview::setOutputEnabled(OutputKind kind, bool enabled) {
+    changeEngine([&] { engine.outputs().setEnabled(kind, enabled); });
+}
+
+void ShaderPreview::setOutputSettings(const OutputSettings &settings) {
+    engine.outputs().setSettings(settings);
 }
 
 void ShaderPreview::setFixedRenderSize(const QSize & size) {
