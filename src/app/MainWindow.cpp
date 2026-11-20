@@ -25,6 +25,7 @@
 #include <QFormLayout>
 #include <QImageReader>
 #include <QJsonArray>
+#include <QLineEdit>
 #include <QMediaDevices>
 #include <QMenu>
 #include <QMenuBar>
@@ -273,6 +274,20 @@ void MainWindow::createMenusAndToolbar() {
         if (input->findData(saved) < 0) input->addItem("Previously selected device (unavailable)", saved);
         input->setCurrentIndex(input->findData(saved));
         layout->addRow("Audio input", input);
+        auto *outputName = new QLineEdit(settings.value(SettingsKeys::OutputName, "ISFLab").toString());
+        auto *v4l2Device = new QLineEdit(settings.value(SettingsKeys::OutputV4l2Device).toString());
+        v4l2Device->setPlaceholderText("First v4l2loopback device");
+        auto *omtQuality = new QComboBox;
+        omtQuality->addItem("Automatic", 0);
+        omtQuality->addItem("Low", 1);
+        omtQuality->addItem("Medium", 50);
+        omtQuality->addItem("High", 100);
+        omtQuality->setCurrentIndex(qMax(0, omtQuality->findData(settings.value(SettingsKeys::OutputOmtQuality, 0).toInt())));
+        const bool anyOutput = outputCompiled(OutputKind::Syphon) || outputCompiled(OutputKind::Spout) ||
+                               outputCompiled(OutputKind::V4l2) || outputCompiled(OutputKind::Omt);
+        if (anyOutput) layout->addRow("Video output name", outputName);
+        if (outputCompiled(OutputKind::V4l2)) layout->addRow("Virtual webcam device", v4l2Device);
+        if (outputCompiled(OutputKind::Omt)) layout->addRow("OMT quality", omtQuality);
         auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
         layout->addRow(buttons);
         connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
@@ -281,10 +296,15 @@ void MainWindow::createMenusAndToolbar() {
         const auto id = input->currentData().toByteArray();
         settings.setValue(SettingsKeys::AudioInputDevice, id);
         preview->setAudioDevice(id);
+        settings.setValue(SettingsKeys::OutputName, outputName->text().trimmed().isEmpty() ? "ISFLab" : outputName->text().trimmed());
+        settings.setValue(SettingsKeys::OutputV4l2Device, v4l2Device->text().trimmed());
+        settings.setValue(SettingsKeys::OutputOmtQuality, omtQuality->currentData().toInt());
+        applyOutputSettings(); // outputs already running keep their name until they are enabled again
     });
     preferences->setMenuRole(QAction::PreferencesRole);
     preferences->setShortcut(QKeySequence::Preferences);
     file->addAction("Quit", QKeySequence::Quit, this, &QWidget::close);
+    createOutputMenu();
     const QIcon brandLogo(":/assets/ISFLab-rounded.png");
     auto *about = menuBar()->addMenu("&Help")->addAction("About ISFLab", this, [this, brandLogo] {
         QDialog dialog(this);
@@ -661,4 +681,46 @@ void MainWindow::updateImageTabs(const QJsonObject &header) {
         sourceTabs->setTabToolTip(index, relative);
         if (previous == path) sourceTabs->setCurrentIndex(index);
     }
+}
+
+// The video outputs share the preview with other software; they stay off until enabled here, and cost nothing then.
+void MainWindow::createOutputMenu() {
+    applyOutputSettings();
+    auto *menu = menuBar()->addMenu("&Output");
+    for (int i = 0; i < OutputKindCount; ++i) {
+        const auto kind = OutputKind(i);
+        if (!outputCompiled(kind)) continue;
+        auto *action = menu->addAction(outputKindName(kind));
+        action->setCheckable(true);
+        connect(action, &QAction::toggled, this, [this, kind](bool enabled) { preview->setOutputEnabled(kind, enabled); });
+        connect(preview, &ShaderPreview::outputStateChanged, action,
+                [this, action, kind](OutputKind changed, const OutputManager::State &state) {
+            if (changed != kind) return;
+            const QString name = outputKindName(kind);
+            action->setToolTip(state.text);
+            action->setText(state.level == OutputManager::State::Error ? name + " (unavailable)" : name);
+            if (state.level == OutputManager::State::Error) {
+                QSignalBlocker blocker(action);
+                action->setChecked(false);
+                QTimer::singleShot(0, this, [this, kind] { preview->setOutputEnabled(kind, false); }); // not from a paint
+                statusBar()->showMessage(name + ": " + state.text, 10000);
+            } else if (state.level == OutputManager::State::Ok && state.text != "Starting…") {
+                statusBar()->showMessage(name + ": " + state.text +
+                    (state.receivers >= 0 ? QString(" — %1 receiver(s)").arg(state.receivers) : QString()), 5000);
+            }
+        });
+    }
+    if (menu->isEmpty()) {
+        menuBar()->removeAction(menu->menuAction());
+        return;
+    }
+}
+
+void MainWindow::applyOutputSettings() {
+    QSettings settings;
+    OutputSettings output;
+    output.name = settings.value(SettingsKeys::OutputName, output.name).toString();
+    output.v4l2Device = settings.value(SettingsKeys::OutputV4l2Device).toString();
+    output.omtQuality = settings.value(SettingsKeys::OutputOmtQuality, 0).toInt();
+    preview->setOutputSettings(output);
 }

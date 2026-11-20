@@ -268,6 +268,13 @@ if(BUILD_TESTING)
     add_executable(ISFLabOutputTest tests/OutputTest.cpp)
     target_link_libraries(ISFLabOutputTest PRIVATE ISFLabEngine)
     add_test(NAME output COMMAND ISFLabOutputTest)
+    if(ISFLAB_OUTPUT_OMT)
+        # With the real libomt: skipped (77) when the library or its discovery service is not installed
+        add_executable(ISFLabOmtTest tests/OmtTest.cpp)
+        target_link_libraries(ISFLabOmtTest PRIVATE ISFLabEngine)
+        add_test(NAME omt COMMAND ISFLabOmtTest)
+        set_tests_properties(omt PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+    endif()
 endif()
 
 if(BUILD_TESTING)
