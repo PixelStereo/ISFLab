@@ -1,6 +1,6 @@
 # ISFLab
 
-<img src="assets/ISFLab-256.png" alt="ISFLab logo" width="112">
+<p align="center"><img src="assets/ISFLab-256.png" alt="ISFLab logo" width="112"></p>
 
 **Browse, preview and edit ISF shaders.**
 A desktop app by **Pixel Stereo** for macOS, Windows and Linux.
