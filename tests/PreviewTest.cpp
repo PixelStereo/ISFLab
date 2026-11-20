@@ -5,6 +5,10 @@
 #include <QFile>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QElapsedTimer>
+#include <QThread>
+#include <mutex>
+#include <vector>
 
 int main(int argc, char **argv) {
     ShaderPreview::configureDefaultFormat();
@@ -181,6 +185,46 @@ int main(int argc, char **argv) {
         preview.grabFramebuffer();
         if (!compiled) qFatal("Preview did not recover after reducing the size");
 
+        // Video outputs: nothing is read back until one is enabled; the picture they get is the one rendered, upright
+        const QByteArray halves = R"(/*{}*/
+            void main() { gl_FragColor = isf_FragNormCoord.y > 0.5 ? vec4(1, 0, 0, 1) : vec4(0, 0, 1, 1); })";
+        preview.setFixedRenderSize(QSize());
+        preview.resize(320, 180);
+        preview.load(halves, *ISFScanner::header(halves), {});
+        std::mutex tapLock;
+        std::vector<CpuFrame> taps;
+        preview.grabFramebuffer();
+        preview.makeCurrent();
+        preview.engineOutputs().setTestOutput(std::shared_ptr<CpuOutput>(createTapOutput([&](const CpuFrame &frame) {
+            std::lock_guard guard(tapLock);
+            taps.push_back(frame);
+        })));
+        preview.doneCurrent();
+        for (int i = 0; i < 6; ++i) {
+            const auto frame = preview.grabFramebuffer(); // the screen keeps showing the picture, upright
+            const auto top = frame.pixelColor(frame.width() / 2, 2), bottom = frame.pixelColor(frame.width() / 2, frame.height() - 3);
+            if (top.red() < 250 || top.blue() > 5 || bottom.blue() < 250 || bottom.red() > 5)
+                qFatal("The preview changed while an output was enabled (a pixel buffer left bound?)");
+            QThread::msleep(20);
+        }
+        QThread::msleep(200);
+        {
+            std::lock_guard guard(tapLock);
+            if (taps.empty()) qFatal("An enabled output received no picture");
+            const auto &frame = taps.back();
+            const auto stride = size_t(frame.width) * 4;
+            if (frame.rgba.size() != stride * size_t(frame.height) || frame.width < 100)
+                qFatal("The output's picture has the wrong size");
+            const uint8_t *bottomRow = frame.rgba.data() + stride * 2, *topRow = frame.rgba.data() + stride * size_t(frame.height - 3);
+            // OpenGL's order: the bottom row first
+            if (bottomRow[2] < 250 || bottomRow[0] > 5 || topRow[0] < 250 || topRow[2] > 5)
+                qFatal("The output's picture is not the rendered one (orientation or channels)");
+        }
+        preview.makeCurrent();
+        preview.engineOutputs().setTestOutput(nullptr);
+        preview.doneCurrent();
+        const auto after = preview.grabFramebuffer();
+        if (after.pixelColor(after.width() / 2, 2).red() < 250) qFatal("The preview broke after the output stopped");
         // The batch checker reports the same results as the preview, while the preview keeps working.
         ShaderChecker checker;
         if (const auto error = checker.initialize(); !error.isEmpty()) qFatal("Checker: %s", qPrintable(error));

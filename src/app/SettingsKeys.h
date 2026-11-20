@@ -18,4 +18,7 @@ inline constexpr auto BinShownTag = "mediaBin/shownTag";
 inline constexpr auto PreviewResolution = "preview/fixedResolution";
 inline constexpr auto PreviewTrackMouse = "preview/trackMouse";
 inline constexpr auto PreviewColorPicker = "preview/colorPicker";
+inline constexpr auto OutputName = "output/name";
+inline constexpr auto OutputV4l2Device = "output/v4l2Device";
+inline constexpr auto OutputOmtQuality = "output/omtQuality";
 }

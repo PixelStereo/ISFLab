@@ -7,6 +7,7 @@ A desktop app by **Pixel Stereo** for macOS, Windows and Linux.
 
 - **Browse** generators, filters and transitions by name, type or category, and make your own collections with tags (right-click a shader, Tags).
 - **Preview** filters with an animated test card and transitions with looping **BEFORE / AFTER** cards. Use your own images, ISF generators or live feeds via Syphon, Spout or GStreamer shared memory.
+- **Share** the preview with other software from the **Output** menu: Syphon (macOS), Spout (Windows), a virtual webcam through v4l2loopback (Linux) or OMT over the network (macOS, Windows, Linux, Raspberry Pi). See [Video outputs](#video-outputs).
 - **Edit** GLSL alongside a visual editor for inputs and passes. Save your preview settings as shader defaults.
 - **Export** filtered shaders to a folder or ZIP with their vertex shaders, images and relative paths intact.
 
@@ -31,6 +32,21 @@ Build with **Qt 6.5+** (Widgets, OpenGL, OpenGL Widgets and Multimedia), **CMake
 ```
 
 On Windows, run `build.cmd` from a Visual Studio developer shell with Qt on CMake’s search path. For live input on Linux, build with the GStreamer development libraries and install the shared-memory plugin.
+
+## Video outputs
+
+The rendered picture can be shared with other software. Every output is off until you enable it in the **Output** menu, and costs nothing while it is off. The picture is shared at its render size: choose a fixed resolution in the preview for a stable size. Nothing is sent while the preview is paused or hidden.
+
+| Output | Platform | How it works |
+| --- | --- | --- |
+| **Syphon** | macOS | The GPU texture is shared (a GPU-side copy, no read-back). |
+| **Spout** | Windows | The GPU texture is shared (a GPU-side copy, no read-back). |
+| **Virtual webcam** | Linux, Raspberry Pi | The picture is read back, converted to YUYV and written to a v4l2loopback device. Needs the module: `sudo modprobe v4l2loopback exclusive_caps=1 card_label=ISFLab` (`exclusive_caps=1` makes it visible to Chrome). The size cannot change while another application has the camera open. |
+| **OMT** | macOS, Windows, Linux, Raspberry Pi | The picture is read back and sent over the network ([Open Media Transport](https://github.com/openmediatransport), MIT license; the VMX codec runs on the CPU). Needs `libomt` and `libvmx` next to the application, in `OMT_LIBRARY_DIR` or in the system's library folder. On Linux it also needs the Avahi service. |
+
+The read-back is asynchronous (three pixel buffers, mapped two frames later), allocated only while a read-back output is on and only again when the picture's size changes. Conversion and sending run in a thread of their own; a late output drops pictures instead of slowing the preview.
+
+Each output can be left out of the build with `-DISFLAB_OUTPUT_SYPHON=OFF`, `-DISFLAB_OUTPUT_SPOUT=OFF`, `-DISFLAB_OUTPUT_V4L2=OFF` or `-DISFLAB_OUTPUT_OMT=OFF`. Preferences holds the output name, the virtual webcam device and the OMT quality.
 
 Open **File → Load examples** to try all three shader types.
 

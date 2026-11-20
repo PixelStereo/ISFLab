@@ -123,6 +123,45 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 target_sources(ISFLabEngine PRIVATE src/engine/input/LiveInput.h ${live_source})
 target_link_libraries(ISFLabEngine PRIVATE ${live_libraries})
+
+# Video outputs: the rendered picture shared with other software. Each one is optional at build time (an option, and
+# its platform) and does nothing until it is enabled in the application.
+#  - Syphon (macOS), Spout (Windows): the GPU texture is shared, never read back
+#  - v4l2loopback (Linux): a virtual webcam; needs the kernel's V4L2 header, and the module at run time
+#  - OMT (all platforms): network; libomt and libvmx are loaded at run time, no build-time dependency
+option(ISFLAB_OUTPUT_SYPHON "Syphon video output (macOS)" ON)
+option(ISFLAB_OUTPUT_SPOUT "Spout video output (Windows)" ON)
+option(ISFLAB_OUTPUT_V4L2 "Virtual webcam video output through v4l2loopback (Linux)" ON)
+option(ISFLAB_OUTPUT_OMT "OMT (Open Media Transport) network video output, libomt loaded at run time" ON)
+target_sources(ISFLabEngine PRIVATE
+    src/engine/output/VideoOutput.h src/engine/output/PixelConvert.h src/engine/output/PixelConvert.cpp
+    src/engine/output/CpuSendThread.h src/engine/output/CpuSendThread.cpp
+    src/engine/output/OutputManager.h src/engine/output/OutputManager.cpp
+    src/engine/output/OutputNone.cpp)
+target_include_directories(ISFLabEngine PUBLIC src/engine/output)
+if(APPLE AND ISFLAB_OUTPUT_SYPHON)
+    target_sources(ISFLabEngine PRIVATE src/engine/output/OutputSyphon.mm)
+    set_source_files_properties(src/engine/output/OutputSyphon.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_compile_definitions(ISFLabEngine PRIVATE ISFLAB_OUTPUT_SYPHON)
+endif()
+if(WIN32 AND ISFLAB_OUTPUT_SPOUT)
+    target_sources(ISFLabEngine PRIVATE src/engine/output/OutputSpout.cpp)
+    target_compile_definitions(ISFLabEngine PRIVATE ISFLAB_OUTPUT_SPOUT)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND ISFLAB_OUTPUT_V4L2)
+    include(CheckIncludeFileCXX)
+    check_include_file_cxx(linux/videodev2.h isflab_has_v4l2)
+    if(isflab_has_v4l2)
+        target_sources(ISFLabEngine PRIVATE src/engine/output/OutputV4l2.cpp)
+        target_compile_definitions(ISFLabEngine PRIVATE ISFLAB_OUTPUT_V4L2)
+    else()
+        message(WARNING "linux/videodev2.h not found: built without the virtual webcam output")
+    endif()
+endif()
+if(ISFLAB_OUTPUT_OMT)
+    target_sources(ISFLabEngine PRIVATE src/engine/output/OutputOmt.cpp)
+    target_compile_definitions(ISFLabEngine PRIVATE ISFLAB_OUTPUT_OMT)
+endif()
 # Shared Pixel Stereo code (SliderField, ColorPicker), pinned as a submodule
 set(PXS_BUILD_TESTS OFF)
 add_subdirectory(third_party/pxs pxs EXCLUDE_FROM_ALL)
@@ -226,6 +265,16 @@ if(BUILD_TESTING)
     add_executable(ISFLabEngineTest tests/EngineTest.cpp)
     target_link_libraries(ISFLabEngineTest PRIVATE ISFLabEngine)
     add_test(NAME engine COMMAND ISFLabEngineTest)
+    add_executable(ISFLabOutputTest tests/OutputTest.cpp)
+    target_link_libraries(ISFLabOutputTest PRIVATE ISFLabEngine)
+    add_test(NAME output COMMAND ISFLabOutputTest)
+    if(ISFLAB_OUTPUT_OMT)
+        # With the real libomt: skipped (77) when the library or its discovery service is not installed
+        add_executable(ISFLabOmtTest tests/OmtTest.cpp)
+        target_link_libraries(ISFLabOmtTest PRIVATE ISFLabEngine)
+        add_test(NAME omt COMMAND ISFLabOmtTest)
+        set_tests_properties(omt PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+    endif()
 endif()
 
 if(BUILD_TESTING)
@@ -256,12 +305,11 @@ if(BUILD_TESTING AND ISFLAB_TEST_OPENGL)
 endif()
 
 if(APPLE AND BUILD_TESTING AND ISFLAB_TEST_OPENGL)
-    add_executable(ISFLabSyphonTest MACOSX_BUNDLE tests/SyphonTest.mm src/engine/input/SyphonInput.mm)
+    add_executable(ISFLabSyphonTest MACOSX_BUNDLE tests/SyphonTest.mm)
     set_target_properties(ISFLabSyphonTest PROPERTIES AUTOMOC OFF OBJCXX_STANDARD 17
         MACOSX_BUNDLE_GUI_IDENTIFIER "studio.pixelstereo.isflab.syphon-test")
     set_source_files_properties(tests/SyphonTest.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-    target_include_directories(ISFLabSyphonTest PRIVATE src/engine/input)
-    target_link_libraries(ISFLabSyphonTest PRIVATE Qt6::Widgets Qt6::OpenGLWidgets isflab_syphon)
+    target_link_libraries(ISFLabSyphonTest PRIVATE Qt6::Widgets Qt6::OpenGLWidgets ISFLabEngine)
     add_test(NAME syphon COMMAND "$<TARGET_FILE:ISFLabSyphonTest>" --automated)
     set_tests_properties(syphon PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
 endif()

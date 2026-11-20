@@ -28,6 +28,8 @@ protected:
 
 private:
     void createMenusAndToolbar();
+    void createOutputMenu();
+    void applyOutputSettings();
     QWidget *createEditorArea();
     void connectPanels();
     void restoreSession();

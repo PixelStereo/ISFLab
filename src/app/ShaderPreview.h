@@ -30,7 +30,13 @@ public:
     void setAudioDevice(const QByteArray &id);
     QString audioStatus() const { return audioMessage; }
     void setImage(const QString &name, const QImage &image);
+    // Video outputs (Syphon, Spout, virtual webcam, OMT): disabled until enabled, then they share the rendered picture.
+    void setOutputEnabled(OutputKind kind, bool enabled);
+    bool outputEnabled(OutputKind kind) { return engine.outputs().isEnabled(kind); }
+    void setOutputSettings(const OutputSettings &settings);
+    OutputManager &engineOutputs() { return engine.outputs(); } // for tests: needs the context current
 signals:
+    void outputStateChanged(OutputKind kind, const OutputManager::State &state);
     void audioStatusChanged(const QString &message);
     void status(const QString &message, bool compiled);
     void glslDiagnostic(const QString &stage, const QString &file, const QString &log, int line);
