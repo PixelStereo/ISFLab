@@ -10,7 +10,7 @@ project(ISFLab VERSION "${isflab_version}" LANGUAGES CXX)
 # that release ("0.2.1+3") and a trailing "+" when it has uncommitted changes ("0.2.1+3+").
 set(ISFLAB_DISPLAY_VERSION "${PROJECT_VERSION}")
 if(NOT DEFINED ISFLAB_TAG_VERSION AND NOT ISFLAB_RELEASE_BUILD)
-    include(third_party/pxs/cmake/PixelStereoBuildId.cmake)
+    include(third_party/pxs-qt/cmake/PixelStereoBuildId.cmake)
     pxs_nearest_release("${CMAKE_CURRENT_SOURCE_DIR}" isflab_release)
     if(NOT isflab_release STREQUAL "")
         set(ISFLAB_DISPLAY_VERSION "${isflab_release}") # the tag the commits are counted from, even before VERSION catches up
@@ -164,7 +164,7 @@ if(ISFLAB_OUTPUT_OMT)
 endif()
 # Shared Pixel Stereo code (SliderField, ColorPicker), pinned as a submodule
 set(PXS_BUILD_TESTS OFF)
-add_subdirectory(third_party/pxs pxs EXCLUDE_FROM_ALL)
+add_subdirectory(third_party/pxs-qt pxs EXCLUDE_FROM_ALL)
 target_link_libraries(ISFLab PRIVATE ISFLabEngine Qt6::Widgets Qt6::OpenGLWidgets Qt6::Multimedia pxs::theme pxs::widgets)
 target_compile_definitions(ISFLab PRIVATE ISFLAB_VERSION="${ISFLAB_DISPLAY_VERSION}")
 if(MSVC)
