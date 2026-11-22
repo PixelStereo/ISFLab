@@ -8,5 +8,5 @@ permissions:
   contents: write
 jobs:
   update:
-    uses: PixelStereo/pxs/.github/workflows/release-downloads.yml@v0.33.0
+    uses: PixelStereo/pxs-qt/.github/workflows/release-downloads.yml@v0.33.0
     with: { app: ISFLab, platforms: "mac,win,linux", pxs-ref: v0.33.0 }
