@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: recursive
       - name: Install macOS Qt
         if: runner.os == 'macOS'
         run: brew install qt
@@ -152,7 +152,7 @@ jobs:
           $app = Get-Content build-ci/application.json | ConvertFrom-Json
           # The user picks the install mode: for all users (the default) or for the current user only
           $setup = Join-Path $PWD "ISFLab-windows-x64$env:TAG_SUFFIX-Setup.exe"
-          & $compiler "/DPRODUCT=ISFLab" "/DAPP_VERSION=$($app.version)" "/DAPP_EXE=bin\$($app.name).exe" "/DPAYLOAD=$PWD\package" "/DOUTPUT=$setup" third_party/pxs/packaging/windows.nsi
+          & $compiler "/DPRODUCT=ISFLab" "/DAPP_VERSION=$($app.version)" "/DAPP_EXE=bin\$($app.name).exe" "/DPAYLOAD=$PWD\package" "/DOUTPUT=$setup" third_party/pxs-qt/packaging/windows.nsi
           if ($LASTEXITCODE -ne 0 -or !(Test-Path $setup)) {
             throw "Windows installer build failed"
           }
