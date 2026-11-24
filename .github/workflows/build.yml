@@ -126,6 +126,10 @@ jobs:
             "$app/Contents/PlugIns/imageformats/libqsvg.dylib" \
             "$app/Contents/PlugIns/iconengines/libqsvgicon.dylib" \
             "$app/Contents/PlugIns/platforminputcontexts/libqtvirtualkeyboardplugin.dylib"
+          # The OMT runtime is loose in Frameworks (libomt, libvmx): signed first: signing the executable of a bundle signs the whole bundle, which needs its subcomponents signed
+          while IFS= read -r -d '' library; do
+            codesign --force --sign - "$library"
+          done < <(find "$app/Contents/Frameworks" -maxdepth 1 -type f -name '*.dylib' -print0)
           while IFS= read -r -d '' binary; do
             file "$binary" | grep -q Mach-O || continue
             install_id="$(otool -D "$binary" | sed -n '2p')"
@@ -142,10 +146,6 @@ jobs:
             done < <(otool -L "$binary" | awk -v id="$install_id" 'NR > 1 && $1 != id && $1 ~ /^@rpath\// {print $1}')
             codesign --force --sign - "$binary"
           done < <(find "$app/Contents" -type f -print0)
-          # The OMT runtime is loose in Frameworks (libomt, libvmx): signed by name too, they are subcomponents of the app
-          while IFS= read -r -d '' library; do
-            codesign --force --sign - "$library"
-          done < <(find "$app/Contents/Frameworks" -maxdepth 1 -type f -name '*.dylib' -print0)
           while IFS= read -r -d '' bundle; do
             codesign --force --sign - "$bundle"
           done < <(find "$app/Contents" -depth -type d \( -name '*.framework' -o -name '*.bundle' -o -name '*.app' \) -print0)
