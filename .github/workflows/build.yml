@@ -52,6 +52,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libgl1-mesa-dev libxkbcommon-dev libxcb-cursor0 xvfb xauth \
             libgl1-mesa-dri libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-bad
+      - uses: actions/setup-dotnet@v4 # OMT: libomt is built with .NET Native AOT
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build the OMT runtime (libomt and libvmx, MIT, from source)
+        shell: bash
+        run: |
+          py=python3
+          if [[ "$RUNNER_OS" == Windows ]]; then py=python; fi
+          "$py" scripts/build_omt.py "$RUNNER_TEMP/omt"
       - name: Release file suffix
         shell: bash
         run: |
@@ -87,6 +96,22 @@ jobs:
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
       - run: cmake --install build-ci --config Release --prefix "${{ github.workspace }}/package"
+      # Where ISFLab looks for libomt first: next to the application (Frameworks in the macOS bundle)
+      - name: Add the OMT runtime to the package
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            app_name="$(python3 -c 'import json; print(json.load(open("build-ci/application.json"))["name"])')"
+            cp "$RUNNER_TEMP/omt/libomt.dylib" "$RUNNER_TEMP/omt/libvmx.dylib" "package/$app_name.app/Contents/Frameworks/"
+            mkdir -p "package/$app_name.app/Contents/Resources"
+            cp "$RUNNER_TEMP/omt/OMT-LICENSES.txt" "package/$app_name.app/Contents/Resources/"
+          elif [[ "$RUNNER_OS" == Windows ]]; then
+            cp "$RUNNER_TEMP/omt/libomt.dll" "$RUNNER_TEMP/omt/libvmx.dll" package/bin/
+            mkdir -p package/licenses && cp "$RUNNER_TEMP/omt/OMT-LICENSES.txt" package/licenses/
+          else
+            cp "$RUNNER_TEMP/omt/libomt.so" "$RUNNER_TEMP/omt/libvmx.so" package/bin/
+            mkdir -p package/licenses && cp "$RUNNER_TEMP/omt/OMT-LICENSES.txt" package/licenses/
+          fi
       - name: Sign and archive macOS bundle
         if: runner.os == 'macOS'
         run: |
@@ -101,6 +126,10 @@ jobs:
             "$app/Contents/PlugIns/imageformats/libqsvg.dylib" \
             "$app/Contents/PlugIns/iconengines/libqsvgicon.dylib" \
             "$app/Contents/PlugIns/platforminputcontexts/libqtvirtualkeyboardplugin.dylib"
+          # The OMT runtime is loose in Frameworks (libomt, libvmx): signed first: signing the executable of a bundle signs the whole bundle, which needs its subcomponents signed
+          while IFS= read -r -d '' library; do
+            codesign --force --sign - "$library"
+          done < <(find "$app/Contents/Frameworks" -maxdepth 1 -type f -name '*.dylib' -print0)
           while IFS= read -r -d '' binary; do
             file "$binary" | grep -q Mach-O || continue
             install_id="$(otool -D "$binary" | sed -n '2p')"
